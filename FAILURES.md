@@ -135,6 +135,59 @@ caught. Already ignored, but it is a reminder that build output carries secrets.
 
 ---
 
+## 5. The blueprint's holiday API has no Indian data — and its replacement nearly blocked 54 days a year
+
+**When:** Milestone 2, seeding the bank-holiday cache.
+**Symptom:** `npm run db:seed` reported `holiday source unreachable`. The gate
+worked, but with an empty holiday set — so bank-holiday awareness, which is a
+stated pitch talking point, was silently doing nothing.
+
+**Diagnosis, part one:** Nager.Date returns **HTTP 204 No Content** for `IN`.
+Not an error, not a timeout — it simply has no Indian holiday data. My fetch
+treated any non-`res.ok` as a skip, and 204 *is* ok, so `res.json()` threw on an
+empty body and got swallowed by the catch that exists to tolerate outages. The
+blueprint chose a holiday source that does not cover the one country this
+product is for, and the failure presented as a network problem.
+
+**Diagnosis, part two — the more interesting one.** Replacement source: Google's
+public "Indian Holidays" ICS calendar. It returns 200 with real data, needs no
+API key. Seeding it cached **78 holidays across two years**. That number is
+absurd on its face, and chasing it down is what mattered: each VEVENT carries a
+DESCRIPTION of either `Public holiday` (gazetted — banks shut) or `Observance`
+(cultural — banks open, settlement runs perfectly well). For 2026 that split is
+**18 public holidays against 36 observances**.
+
+Caching all of them would have deferred every recovery attempt on 54 days a
+year, most of them ordinary working days. That is not caution. It is roughly
+15% of the calendar of lost recovery, arriving as a defer that looks correct in
+every trace.
+
+It also would have broken the demo: **2026-09-04, the build date, is
+Janmashtami** — the gate deferred every single event, and the first `gate-probe`
+run showed exactly that.
+
+**Fix:** cache only entries whose DESCRIPTION starts with `Public holiday`. Two
+years dropped from 78 to 32. Spot-checked the result — Gandhi Jayanti, Dussehra,
+Diwali, Guru Nanak Jayanti, Christmas, Janmashtami — which is what a gazetted
+list should look like.
+
+**Cost:** ~25 minutes.
+
+**What remains wrong, stated rather than hidden:** RBI's real holiday list is
+**state-wise**, and a single national calendar cannot express that. A Kerala
+customer on a Kerala-only bank holiday is treated as a working day here. The
+error now runs in the under-blocking direction — a wasted contact rather than a
+wasted day — which is the cheaper mistake, but it is still a mistake. The
+production fix is RBI's published state-wise list keyed by customer state;
+nothing else changes, because the gate only ever reads `holidays_cache`.
+
+**What it means:** an integration returning 200 with *plausible* data is more
+dangerous than one returning 500. The 204 announced itself. The 78 holidays did
+not — they would have quietly degraded recovery, in a direction that looks
+conservative and responsible in every individual decision trace.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.
@@ -175,6 +228,14 @@ interface. Correctness is identical; latency is worse; the swap is one file.
 `src/core/triage/config.ts`. They are not yet tuned against the generator's
 injected outage, and the bar they have to clear — precision *and* recall above
 0.8 — has not been measured yet.
+
+**Bank holidays are a national list, not RBI's state-wise one.** See #5 above.
+
+**Policy write endpoints use a shared operator key, not the JWT session.** The
+blueprint's `/api/auth/login` is not built yet and the demo URL is public, so
+`POST /api/policies`, `/publish` and `/breaker/override` sit behind a bearer
+`OPERATOR_ACCESS_KEY`, constant-time compared. An unauthenticated write is
+refused rather than quietly allowed. Replaced by the JWT session when auth lands.
 
 **The webhook runs unverified in local development.** `RAZORPAY_WEBHOOK_SECRET`
 cannot exist until there is a public URL to register the webhook against. Until

@@ -345,3 +345,23 @@ export const cohortBaselines = pgTable('cohort_baselines', {
   samples: integer('samples').notNull().default(0),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Circuit-breaker state. One row per scope: 'global', or a cohort dimension
+ * like 'HDFC|card' so a single issuer outage does not halt recovery for
+ * everybody. The blueprint names the breaker in the policy and the jobs table
+ * but does not give it storage; this is that storage.
+ */
+export const breakerState = pgTable('breaker_state', {
+  scope: text('scope').primaryKey(), // 'global' | cohort dim
+  state: text('state').notNull().default('closed'), // 'closed' | 'open'
+  triggerSource: text('trigger_source'), // the policy's trigger expression
+  observedValue: numeric('observed_value', { precision: 6, scale: 5 }),
+  threshold: numeric('threshold', { precision: 6, scale: 5 }),
+  openedAt: timestamp('opened_at', { withTimezone: true }),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
+  /** 'system' or 'operator:<email>' — a human override is a logged decision. */
+  actor: text('actor').notNull().default('system'),
+  overrideReason: text('override_reason'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

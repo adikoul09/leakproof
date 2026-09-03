@@ -1,0 +1,25 @@
+# The live policy. Edited through Policy Studio (/policy) in the app; this file
+# is the seed and the reference copy.
+policy_version: 3.2
+
+contact_window:
+  start: "08:00"
+  end:   "19:00"
+  tz:    "Asia/Kolkata"
+
+caps:
+  max_attempts_per_payment:           3
+  max_contacts_per_customer_per_week: 2
+  max_discount_offered_pct:           3.0
+
+stop_on:
+  - payment_success
+  - customer_opt_out
+  - complaint_keyword_detected
+  - refund_issued
+
+circuit_breaker:
+  trigger: "decline_rate_5min > 40%"
+  action:  halt_all_retries
+
+respect_bank_holidays: true

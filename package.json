@@ -14,7 +14,10 @@
     "inngest:dev": "npx inngest-cli@latest dev -u http://localhost:3000/api/inngest",
     "dev:dnsfix": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" next dev",
     "db:migrate:dnsfix": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/migrate.ts",
-    "db:reset": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/reset.ts"
+    "db:reset": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/reset.ts",
+    "db:seed": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/seed-policy.ts",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "gate": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/gate-probe.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
@@ -25,6 +28,7 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "server-only": "^0.0.1",
+    "yaml": "^2.9.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {

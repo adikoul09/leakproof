@@ -19,7 +19,7 @@ Razorpay Buildathon, Track 03.
 | # | Milestone | State |
 |---|---|---|
 | 1 | Webhook ingestion + failure taxonomy classification | ✅ working end to end |
-| 2 | Policy engine (caps, contact window, stop_on, breaker) | ⬜ |
+| 2 | Policy engine (caps, contact window, stop_on, breaker) | ✅ working, 41 tests |
 | 3 | One recovery rail end to end (Razorpay Payment Link) | ⬜ |
 | 4 | Control group + incrementality maths | ⬜ |
 | 5 | Hash-chained audit ledger | 🟡 table + append-only trigger live |
@@ -50,8 +50,15 @@ npm run db:migrate:dnsfix
 
 See [FAILURES.md](FAILURES.md) #1.
 
-Other scripts: `npm run typecheck`, `npm run db:generate`, `npm run db:studio`,
-`npm run db:reset -- --yes` (development only).
+Seed the live policy and warm the bank-holiday cache:
+
+```bash
+npm run db:seed
+```
+
+Other scripts: `npm test`, `npm run typecheck`, `npm run db:generate`,
+`npm run db:studio`, `npm run db:reset -- --yes` (development only), and
+`npm run gate -- <event_id>` to print the policy trace for a real event.
 
 ---
 
@@ -128,6 +135,64 @@ agreement evidence. Feeding it into the classifier would make validating the
 classifier against it circular, and the resulting precision/recall number would
 mean nothing.
 
+### The policy gate
+
+`evaluatePolicy(policy, context)` — pure, deterministic, no I/O. Every fact
+arrives in the context; it never queries a database, never calls the network,
+never reads the clock. Two reasons, both load-bearing:
+
+1. **A policy gate that can time out is not a gate.** If it could make a network
+   call, a slow holiday API would decide whether a customer gets contacted.
+2. The replay engine drives this exact function over a historical corpus. Any
+   hidden input would make replay a different system wearing the same name.
+
+Rules run in a fixed order and short-circuit on the first **block**, so the
+trace reads top to bottom as an explanation:
+
+```
+circuit_breaker → customer_opt_out → stop_on → max_attempts_per_payment
+  → max_contacts_per_customer_per_week → bank_holiday → contact_window
+  → max_discount_offered_pct
+```
+
+Defers do not short-circuit. A later block still wins over an earlier defer,
+because *"we would have waited, but we were never allowed"* is the truthful
+answer. `bank_holiday` and `contact_window` **defer rather than block** — the
+payment is still recoverable tomorrow, and blocking outright would throw it away
+over a calendar accident.
+
+```
+$ npm run gate -- pay_TEST00000001 --at "2026-09-10T14:22:00+05:30"
+
+  ✓ circuit_breaker                    expected closed                    actual closed
+  ✓ customer_opt_out                   expected false                     actual false
+  ✓ stop_on                            expected none of payment_success…  actual none
+  ✓ max_attempts_per_payment           expected 3                         actual 0
+  ✓ max_contacts_per_customer_per_week expected 2                         actual 0
+  ✓ bank_holiday                       expected false                     actual false
+  ✓ contact_window                     expected 08:00-19:00 Asia/Kolkata  actual 14:22 Asia/Kolkata
+  ✓ max_discount_offered_pct           expected 3                         actual 0
+
+  → ALLOW  allow:contact_window,under_caps
+```
+
+The policy YAML is schema-validated at **authoring** time, including the
+circuit-breaker trigger expression, which is parsed into a typed comparison at
+publish time rather than interpreted live. The gate can therefore never meet a
+malformed policy. An unknown `stop_on` value is a 422, not a silent drop — the
+dangerous failure would be an operator believing recovery halts on something it
+does not.
+
+The breaker is scoped **per cohort** (`HDFC|card`), not globally: one issuer
+having a bad afternoon must not halt recovery for every other bank, and a global
+breaker is the kind of blunt instrument that gets switched off permanently after
+its first false trip.
+
+Endpoints: `GET/POST /api/policies`, `GET /api/policies/:version`,
+`POST /api/policies/:version/publish` (archives the previous live version in the
+same transaction), `POST /api/breaker/override` (requires a typed reason).
+Writes sit behind a bearer `OPERATOR_ACCESS_KEY` until the JWT session lands.
+
 ### Data model
 
 18 tables, `drizzle/0000_init.sql`. The blueprint's 15, plus:
@@ -168,7 +233,9 @@ Route handlers are thin: validate → call a service → serialize. Logic lives 
 src/core/
   ingest/     normalize.ts, persist.ts
   triage/     taxonomy.ts, classifier.ts, cohort-store.ts, config.ts
-  policy/ routing/ messaging/ experiment/ ledger/ replay/ cost/   ← milestones 2–8
+  policy/     schema.ts, evaluate.ts, tz.ts, breaker.ts, breaker-store.ts,
+              holidays.ts, store.ts, context.ts
+  routing/ messaging/ experiment/ ledger/ replay/ cost/           ← milestones 3–8
 src/jobs/     Inngest function definitions
 src/app/api/  route handlers
 scripts/      migrate, reset, dns-fallback
@@ -207,6 +274,10 @@ Stated up front rather than discovered by a judge. Full detail in
   netbanking and UPI cohorts the detector runs on internal signal alone and
   agreement is recorded as `NULL`, not `false`: "no signal" and "disagreed" are
   different facts and the scorecard must not conflate them.
+- **Bank holidays come from a national calendar, not RBI's state-wise list.**
+  Gazetted holidays only — observances are filtered out, because caching them
+  would have deferred recovery on 54 days a year. A state-only holiday is
+  currently treated as a working day. FAILURES.md #5.
 - **Triage thresholds are untuned.** `n ≥ 8`, `3σ`, `0.25`, `α = 0.3` are the
   blueprint's starting guesses. They have to clear precision *and* recall above
   0.8 against the generator's injected outage, and that has not been measured.
