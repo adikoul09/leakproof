@@ -44,3 +44,6 @@ next-env.d.ts
 !.env.example
 Requirements.md
 leakproof-secrets.txt
+# private planning docs — kept local, never published
+LEAKPROOF_BLUEPRINT.md
+leakproof-claude-code-kickoff.md
