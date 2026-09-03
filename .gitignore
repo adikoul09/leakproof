@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# leakproof
+!.env.example
+Requirements.md
+leakproof-secrets.txt

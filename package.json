@@ -6,22 +6,39 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:studio": "drizzle-kit studio",
+    "typecheck": "tsc --noEmit",
+    "inngest:dev": "npx inngest-cli@latest dev -u http://localhost:3000/api/inngest",
+    "dev:dnsfix": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" next dev",
+    "db:migrate:dnsfix": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/migrate.ts",
+    "db:reset": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/reset.ts"
   },
   "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "inngest": "^3.54.2",
+    "next": "15.5.25",
+    "postgres": "^3.4.9",
+    "razorpay": "^2.9.8",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "next": "15.5.25"
+    "server-only": "^0.0.1",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "typescript": "^5",
-    "@types/node": "^20",
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20.19.43",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@tailwindcss/postcss": "^4",
-    "tailwindcss": "^4",
+    "dotenv": "^17.4.2",
+    "drizzle-kit": "^0.31.10",
     "eslint": "^9",
     "eslint-config-next": "15.5.25",
-    "@eslint/eslintrc": "^3"
+    "tailwindcss": "^4",
+    "tsx": "^4.23.13",
+    "typescript": "^5"
   }
 }
