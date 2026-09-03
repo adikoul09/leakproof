@@ -20,8 +20,8 @@ Razorpay Buildathon, Track 03.
 |---|---|---|
 | 1 | Webhook ingestion + failure taxonomy classification | ✅ working end to end |
 | 2 | Policy engine (caps, contact window, stop_on, breaker) | ✅ working, 41 tests |
-| 3 | One recovery rail end to end (Razorpay Payment Link) | ⬜ |
-| 4 | Control group + incrementality maths | ⬜ |
+| 3 | One recovery rail end to end (Razorpay Payment Link) | ✅ real links created |
+| 4 | Control group + incrementality maths | 🟡 arms assigned + held out; CIs pending |
 | 5 | Hash-chained audit ledger | 🟡 table + append-only trigger live |
 | 6 | Synthetic data generator | 🟡 ingest endpoint live, generator pending |
 | 7 | Control Tower dashboard | ⬜ |
@@ -55,6 +55,10 @@ Seed the live policy and warm the bank-holiday cache:
 ```bash
 npm run db:seed
 ```
+
+Note: the contact window is 08:00–19:00 IST and bank holidays defer, so outside
+those hours the pipeline correctly *defers* rather than sends. `policies/` holds
+the reference YAML.
 
 Other scripts: `npm test`, `npm run typecheck`, `npm run db:generate`,
 `npm run db:studio`, `npm run db:reset -- --yes` (development only), and
@@ -193,6 +197,59 @@ Endpoints: `GET/POST /api/policies`, `GET /api/policies/:version`,
 same transaction), `POST /api/breaker/override` (requires a typed reason).
 Writes sit behind a bearer `OPERATOR_ACCESS_KEY` until the JWT session lands.
 
+### The recovery rail
+
+The full chain runs end to end against Razorpay test mode:
+
+```
+webhook → classify → assign arm → plan (rail + policy gate) → execute → link sent
+```
+
+A real run, four events, one shared issuer outage:
+
+| event | arm | rail | chosen by | link | cost |
+|---|---|---|---|---|---|
+| `pay_M3TEST0004` | **control** | — | — | — | — |
+| `pay_M3TEST0005` | naive | `email_link` | `naive_fixed` | `plink_TXhbxFMa9zBWiW` | ₹0.04 |
+| `pay_M3TEST0000` | leakproof | `upi_payment_link` | `static_table` | `plink_TXhbxlSXAjRAbY` | ₹0.20 |
+| `pay_M3TEST0001` | leakproof | `upi_payment_link` | `static_table` | `plink_TXhbwfIGmVmktP` | ₹0.20 |
+
+The control arm is **held out**: no rail, no policy evaluation, no attempt, no
+spend. It stays `at_risk`, which is the honest description of an event we have
+deliberately decided not to touch. That is the entire experiment.
+
+**Arm assignment** is `bucket(sha256(event_id + SALT)) % 100` → 18 / 20 / 62.
+No stored randomness: given the event id and the salt, the arm is reproducible
+forever. That is what lets replay reconstruct the experiment, and what lets an
+auditor verify an event was not moved between arms after the fact. The stored
+`hash_input` means they can recompute the bucket without being handed the salt
+separately. `ARM_ASSIGNMENT_SALT` must never change once events exist.
+
+**Rail routing** is a static table keyed by failure class, ordered by attempt
+number, each entry carrying the rationale the Decision Trace shows a human.
+An issuer outage routes *around* the issuer (`upi_payment_link`) rather than
+retrying into it. An `insufficient_funds` failure schedules a delayed retry
+rather than burning an attempt against the cap immediately. A `risk_blocked`
+failure is never auto-retried — that is how a merchant account gets flagged.
+
+**Delivery** rides Razorpay's own `notify: {sms, email}` on the Payment Link,
+which is why the rail is genuinely end to end without Resend or WhatsApp
+provisioned. `reference_id` is the attempt's UUID, which doubles as an
+idempotency key: a duplicate is caught, the existing link is fetched, and a
+customer can never receive two links for one attempt.
+
+**Execution re-checks everything.** Between planning and execution the customer
+may have paid, opted out, complained, or the breaker may have tripped. The job
+sleeps durably (`step.sleepUntil`), then rebuilds the policy context and
+re-evaluates before sending. Every event carries exactly two `policy_evaluations`
+rows — one at plan, one at the execution-time re-check.
+
+Message copy is a static template for now, honestly recorded as
+`used_fallback: true`. `composeMessage()` over Gemini slots in behind the same
+interface; the LLM boundary stays narrow by design — it receives an
+already-approved action and returns copy, and never decides whether to contact,
+how much to offer, or when to send.
+
 ### Data model
 
 18 tables, `drizzle/0000_init.sql`. The blueprint's 15, plus:
@@ -235,7 +292,12 @@ src/core/
   triage/     taxonomy.ts, classifier.ts, cohort-store.ts, config.ts
   policy/     schema.ts, evaluate.ts, tz.ts, breaker.ts, breaker-store.ts,
               holidays.ts, store.ts, context.ts
-  routing/ messaging/ experiment/ ledger/ replay/ cost/           ← milestones 3–8
+  routing/    static-table.ts
+  rails/      razorpay.ts
+  messaging/  templates.ts
+  experiment/ assign.ts
+  cost/       meter.ts
+  ledger/ replay/                                                ← milestones 5, 8
 src/jobs/     Inngest function definitions
 src/app/api/  route handlers
 scripts/      migrate, reset, dns-fallback
@@ -269,11 +331,14 @@ Stated up front rather than discovered by a judge. Full detail in
   is a static `failure_class → ordered rail list` table. The `bandit_arms` table
   and the α/β update path ship anyway behind `FEATURE_BANDIT=false`, so the
   design is reviewable.
-- **The Payment Downtime API only covers `card` and `ach`** — not `netbanking`,
-  not `upi`. So the flagship outage scenario is a **card issuer outage**. For
-  netbanking and UPI cohorts the detector runs on internal signal alone and
-  agreement is recorded as `NULL`, not `false`: "no signal" and "disagreed" are
-  different facts and the scorecard must not conflate them.
+- **The Payment Downtime API's test-mode data looks like fixtures.**
+  `GET /v1/payments/downtimes` returns 200 on test-mode keys and covers
+  `netbanking`, `card`, `upi` and `fpx` — but all 16 rows are simultaneous,
+  unresolved, high-severity, which is not a plausible production state. The
+  agreement scorecard is therefore fed by the simulator's injected windows and
+  says so on screen. Agreement is recorded as `NULL`, not `false`, when there is
+  no signal for a cohort: "no signal" and "disagreed" are different facts.
+  FAILURES.md #6.
 - **Bank holidays come from a national calendar, not RBI's state-wise list.**
   Gazetted holidays only — observances are filtered out, because caching them
   would have deferred recovery on 54 days a year. A state-only holiday is

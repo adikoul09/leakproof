@@ -97,6 +97,15 @@ export const triageClassify = inngest.createFunction(
         });
     });
 
+    // Settle the state. 'classifying' is an in-flight marker, not a resting
+    // place — an event left in it looks stuck. Back to 'at_risk', which is
+    // exactly what a classified-but-not-yet-actioned event is. recovery.plan
+    // moves it on from here; a control-arm event stays here forever, which is
+    // the honest description of a held-out event.
+    await step.run('settle-state', () =>
+      db.update(paymentEvents).set({ state: 'at_risk' }).where(eq(paymentEvents.id, eventId)),
+    );
+
     await step.sendEvent('announce', {
       name: 'event.classified',
       data: {

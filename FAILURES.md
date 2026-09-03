@@ -188,6 +188,155 @@ conservative and responsible in every individual decision trace.
 
 ---
 
+## 6. The Downtime API assumption was wrong in three ways at once
+
+**When:** Milestone 3, closing the one open question from the kickoff brief.
+
+The brief carried an "important correction" to the blueprint, which locked a
+decision: the Payment Downtime API's `method` field supports only `card` and
+`ach`, therefore the flagship outage demo had to be a **card issuer outage**
+rather than the netbanking outage originally designed, and netbanking/UPI
+cohorts would have to run on internal signal alone.
+
+I checked it against the live API with the test-mode keys instead of taking it
+on trust. Three things were wrong:
+
+**1. The endpoint in the brief does not exist.** `GET /v1/payments/downtime`
+(singular) returns `400 BAD_REQUEST_ERROR — "The id provided does not exist"`.
+It is being routed to `GET /v1/payments/:id` with `"downtime"` read as a payment
+id. The real endpoint is **`/v1/payments/downtimes`**, plural. A wrong-endpoint
+404 would have been obvious; a 400 complaining about an id looks like an auth or
+data problem and would have cost real time on deadline day.
+
+**2. It works on test mode.** 200, with 16 items. The brief flagged 403 as a
+live risk, and the Outage Radar's agreement scorecard had a documented fallback
+ready for it. Not needed.
+
+**3. It covers far more than card/ach:**
+
+```
+methods:     netbanking 5 · card 4 · upi 4 · fpx 3
+instruments: netbanking {bank}  card {issuer}  upi {vpa_handle}  fpx {bank}
+```
+
+So the constraint that forced the demo scenario away from netbanking is not
+real. **The card issuer outage remains a perfectly good scenario and nothing is
+blocked** — but it is now a choice rather than a workaround, and netbanking and
+UPI cohorts can be cross-checked after all.
+
+**🔸 One caveat I cannot resolve from here:** all 16 rows have
+`status: "started"` and `severity: "high"`, with `begin` timestamps spread from
+April to August 2026 and `end: null` throughout. Sixteen simultaneous unresolved
+high-severity outages is not a plausible production state, so this is very
+likely **test-mode fixture data rather than a live feed**. That does not change
+the schema, the endpoint or the supported methods — all of which are what the
+integration needs — but it does mean the agreement scorecard cannot be validated
+against real production downtimes from a test account. The scorecard will be fed
+by the simulator's injected windows, and labelled as such on screen.
+
+**Cost:** ~10 minutes. It closed an open question, un-blocked a scenario, and
+found an endpoint typo that would have been expensive to debug later.
+
+**What it means:** the brief's correction was itself carefully reasoned and
+still wrong, because it was reasoned from documentation rather than from a
+request. One `curl` settled it. Every remaining 🔸 ASSUMPTION in this repo that
+can be resolved by a single API call should be, before it is designed around.
+
+---
+
+## 7. The policy gate ran three times and blocked an attempt it had already sent
+
+**When:** Milestone 3, first end-to-end run of the recovery rail.
+**Symptom:** two attempts had a real Razorpay link, a real short URL, a sent
+message and a recorded cost — and were marked `outcome: 'stopped'`, with the
+event in `blocked_by_policy`. Every individual row looked plausible. Only the
+timestamps gave it away: `executed_at` came *before* `outcome_at`. Something
+sent the message and then decided it should not have.
+
+**Diagnosis:** not a retry — every HTTP response was 200 or 206. That is the
+clue. Inngest executes a durable function by **replaying the whole function body
+from the top at every step boundary**, serving memoised results for steps that
+already ran. Code outside `step.run` is therefore not "run once" — it runs once
+per step boundary, with fresh inputs each time.
+
+I had left the policy gate outside a step:
+
+```ts
+const now = new Date();                                   // ← fresh every pass
+const { context } = await buildPolicyContext(eventId, policy, now);  // ← re-queries
+const decision = evaluatePolicy(policy, context);         // ← re-decides
+```
+
+`buildPolicyContext` counts `max_contacts_per_customer_per_week`. All four test
+events shared one customer. So: pass 1 evaluated `allow` and sent. Pass 2 sent
+the second. By pass 3 the context counted the two messages the job had *itself
+just sent*, hit the cap of 2, returned `block` — and the `abandon` branch marked
+an already-delivered attempt as stopped.
+
+**The gate was reading counters that the gate's own decision had moved.**
+
+**Fix:** the whole gate — context build, evaluation, and the
+`policy_evaluations` insert — moved inside one `step.run('evaluate-gate')`, in
+both `recovery.plan` and `recovery.execute`. The decision is memoised, so every
+replay sees the answer the gate actually gave. Belt and braces: the abandon
+branch now re-reads `executed_at` and refuses to mark a sent attempt as stopped,
+because an attempt that has gone out cannot be un-sent and saying otherwise
+would be a lie in the ledger.
+
+Confirmed by the evaluation count: three events previously produced five
+`policy_evaluations` rows in an unpredictable pattern. They now produce exactly
+two each — one at plan, one at the execution-time re-check, which is precisely
+what the design says should happen.
+
+**Cost:** ~35 minutes, most of it not believing "no errors" and looking for a
+retry that did not exist.
+
+**What it means, and it generalises past Inngest:** this is the same class of
+bug as #3. In #3 a live signal fed the baseline it was measured against. Here a
+gate read counters its own decision incremented. Both produce *plausible* wrong
+answers rather than errors, which is what makes them expensive. The rule now
+applied everywhere: **anything that reads mutable state must be inside a step,
+and a decision must be recorded at the moment it is made, not recomputed later.**
+`evaluatePolicy` being pure is what made the fix a three-line move rather than a
+redesign — the impurity was all in the caller, where it was visible.
+
+---
+
+## 8. `reference_id` collisions would have broken every demo re-run
+
+**When:** Milestone 3, second end-to-end run.
+**Symptom:** `BAD_REQUEST_ERROR — payment link with given reference_id:
+pay_M3TEST0000:1 already exists`. One event's link was created; two failed.
+
+**Diagnosis:** I set `reference_id` to `${eventId}:${attemptNo}`. Razorpay
+enforces uniqueness on `reference_id` **per account, permanently** — it does not
+know or care that I truncated my database between runs. So the second run tried
+to reuse a reference the first run had already consumed.
+
+The one event that succeeded was the tell: its rail was
+`card_retry_delayed_payday`, which sleeps 48 hours, so its earlier run never
+reached link creation and never consumed the reference.
+
+**Why it mattered more than a test annoyance:** the demo re-runs the simulator.
+Every re-run after the first would have failed to create links, on stage,
+with an error that reads like a Razorpay problem rather than an id problem.
+
+**Fix:** `reference_id` is now the attempt's own UUID — fresh on every run,
+because the row is new. And rather than treating a duplicate as fatal,
+`createPaymentLink` now catches it, looks the existing link up by reference, and
+returns that. Razorpay's uniqueness constraint becomes a free idempotency key:
+a customer can never receive two links for one attempt, and an attempt can never
+be marked failed because it already succeeded.
+
+**Cost:** ~15 minutes.
+
+**What it means:** an idempotency key has to be unique over the lifetime of the
+*external* system, not the local database. Anything derived from data I can
+truncate is not an idempotency key, it is a collision waiting for the worst
+possible moment.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.
@@ -202,21 +351,13 @@ These are in the pitch, not hidden in a footnote.
 
 ## Known limitations (design-level, stated in the README too)
 
-**Payment Downtime API only covers `card` and `ach`.** The blueprint originally
-built the flagship outage demo on a *netbanking* outage cross-checked against
-Razorpay's Payment Downtime API. Checking the current API reference: the
-`method` field on `payment.downtime` supports `card` and `ach` only — not
-`netbanking`, not `upi`. So the flagship scenario is a **card issuer outage**.
-For netbanking and UPI cohorts the detector runs on internal signal alone and
-`classifications.downtime_api_agrees` is recorded as `NULL`, not `false` — "no
-signal" and "disagreed" are different facts and the agreement scorecard must not
-conflate them.
-
-**Downtime API in test mode is unconfirmed.** Whether `GET /v1/payments/downtime`
-returns 200 or 403 on test-mode keys is not stated in the docs. To be verified
-with a real call before the Outage Radar's agreement scorecard is built; if it
-403s, the scorecard is fed from the simulator's injected windows and that is
-labelled as such on screen.
+**Payment Downtime API — verified against the live test-mode API, and the
+planning assumption was wrong.** See #6 below. The endpoint is
+`GET /v1/payments/downtimes` (plural), it returns **200 on test-mode keys**, and
+it covers `netbanking`, `card`, `upi` and `fpx` — not `card`/`ach` only as the
+kickoff brief recorded. `downtime_api_agrees` is still `NULL` rather than
+`false` when there is no signal for a cohort: "no signal" and "disagreed" are
+different facts and the agreement scorecard must not conflate them.
 
 **Cohort counters live in Postgres, not Redis.** The blueprint specifies a Redis
 sorted set for the 15-minute rolling decline rate. Upstash is not provisioned, so

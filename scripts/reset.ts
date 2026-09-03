@@ -28,6 +28,7 @@ const TABLES = [
   'replay_runs',
   'failed_jobs',
   'bandit_arms',
+  'breaker_state',
   'audit_ledger',
 ];
 

@@ -29,7 +29,7 @@ Revenue recovery control tower. Deadline 5 Sept. Solo builder, ~28 hrs available
 Cut in this order if time runs short: bandit → subscriptions/invoices sub-surfaces → Hinglish voice (cut first).
 
 ## UI direction
-Dense operations dashboard — think payments war-room console, not a marketing site. Component-level polish can draw on shadcn/21st.dev conventions (fits the chosen stack), but keep layouts dense and functional per the blueprint's Section 5 design system (dark ops console tokens, fixed arm colors, status badges). Avoid landing-page patterns — big hero sections, gradient text, scroll-triggered animation — those work against the "real internal tool" read the judges are looking for.
+Dense operations dashboard — think payments war-room console, not a marketing site. Component-level polish can draw on shadcn/ 21st.dev conventions (fits the chosen stack), but keep layouts dense and functional per the blueprint's Section 5 design system (dark ops console tokens, fixed arm colors, status badges). Avoid landing-page patterns — big hero sections, gradient text, scroll-triggered animation — those work against the "real internal tool" read the judges are looking for.
 
 ## Working conventions
 - Keep `FAILURES.md` updated live as things break — it's a scored criterion, not just a nice-to-have.

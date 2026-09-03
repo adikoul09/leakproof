@@ -13,6 +13,14 @@ type Events = {
   'event.classified': {
     data: { eventId: string; kind: string; failureClass: string; confidence: number };
   };
+  /** Arm assigned. Downstream: recovery.plan (unless the arm is control). */
+  'event.assigned': {
+    data: { eventId: string; arm: 'control' | 'naive' | 'leakproof'; bucket: number };
+  };
+  /** An attempt is scheduled. The job sleeps until scheduledFor, then acts. */
+  'recovery.execute': {
+    data: { eventId: string; attemptId: string; scheduledFor: string };
+  };
 };
 
 export const inngest = new Inngest({

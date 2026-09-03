@@ -1,0 +1,217 @@
+/**
+ * `recovery.execute` — blueprint 6.6.
+ *
+ * Sleeps until the attempt is due, then acts. The sleep is the reason a durable
+ * queue is load-bearing rather than decoration: recovery is inherently
+ * time-shifted — wait for payday, wait out an outage, wait for the contact
+ * window to open — and `setTimeout` does not survive a deploy.
+ *
+ * 🔒 The critical bit, and the blueprint calls it out explicitly: **re-check
+ * the payment state and the policy at execution time.** Between planning and
+ * execution the customer may have paid, opted out, complained, or the breaker
+ * may have tripped. Acting on a decision made 48 hours ago is how a recovery
+ * system messages someone who already paid.
+ */
+import { NonRetriableError } from 'inngest';
+import { eq } from 'drizzle-orm';
+import { db } from '@/db/client';
+import { customers, messages, paymentEvents, policyEvaluations, recoveryAttempts } from '@/db/schema';
+import { buildPolicyContext } from '@/core/policy/context';
+import { evaluatePolicy } from '@/core/policy/evaluate';
+import { parsePolicy } from '@/core/policy/schema';
+import { getLivePolicy } from '@/core/policy/store';
+import { RAIL_CHANNEL, renderTemplate } from '@/core/messaging/templates';
+import { RazorpayError, createPaymentLink } from '@/core/rails/razorpay';
+import { costOf, type CostItem } from '@/core/cost/meter';
+import type { Rail } from '@/core/routing/static-table';
+import { env } from '@/lib/env';
+import { inngest } from '@/lib/inngest';
+
+const MERCHANT_NAME = 'Kirana Cloud';
+/** Links outlive the contact window but not the customer's memory. */
+const LINK_TTL_HOURS = 72;
+
+export const recoveryExecute = inngest.createFunction(
+  { id: 'recovery-execute', name: 'recovery.execute', retries: 3 },
+  { event: 'recovery.execute' },
+  async ({ event, step }) => {
+    const { eventId, attemptId, scheduledFor } = event.data;
+
+    // Durable sleep. Survives redeploys, restarts and the laptop lid closing.
+    await step.sleepUntil('wait-for-window', new Date(scheduledFor));
+
+    const snapshot = await step.run('reload', async () => {
+      const [attempt] = await db
+        .select()
+        .from(recoveryAttempts)
+        .where(eq(recoveryAttempts.id, attemptId))
+        .limit(1);
+      if (!attempt) throw new NonRetriableError(`attempt ${attemptId} not found`);
+
+      const [pe] = await db
+        .select()
+        .from(paymentEvents)
+        .where(eq(paymentEvents.id, eventId))
+        .limit(1);
+      if (!pe) throw new NonRetriableError(`payment event ${eventId} not found`);
+
+      const [customer] = pe.customerId
+        ? await db.select().from(customers).where(eq(customers.id, pe.customerId)).limit(1)
+        : [undefined];
+
+      return { attempt, pe, customer: customer ?? null };
+    });
+
+    // Already executed — a retry of this step must not send twice.
+    if (snapshot.attempt.executedAt) {
+      return { eventId, attemptId, skipped: 'already_executed' };
+    }
+
+    // The customer paid while we were waiting. This is a success, not a miss.
+    if (snapshot.pe.state === 'recovered') {
+      await step.run('mark-superseded', () =>
+        db
+          .update(recoveryAttempts)
+          .set({ outcome: 'cancelled_payment_succeeded', outcomeAt: new Date() })
+          .where(eq(recoveryAttempts.id, attemptId)),
+      );
+      return { eventId, attemptId, skipped: 'payment_already_succeeded' };
+    }
+
+    // ── Re-evaluate the policy against the world as it is now ──────────
+    // 🔒 Inside a step, and it has to be. Inngest replays this function body
+    // from the top at every step boundary; a gate left outside a step
+    // re-evaluates each pass against counters the job itself has since moved.
+    // That is not hypothetical — it marked a successfully sent attempt as
+    // 'stopped'. See FAILURES.md #7.
+    const decision = await step.run('recheck-policy', async () => {
+      const live = await getLivePolicy();
+      if (!live) throw new NonRetriableError('no live policy at execution time');
+      const parsed = parsePolicy(live.yamlSource);
+      if (!parsed.ok) throw new NonRetriableError(`live policy ${live.version} does not parse`);
+
+      const at = new Date();
+      const { context } = await buildPolicyContext(eventId, parsed.policy, at);
+      const d = evaluatePolicy(parsed.policy, context);
+
+      await db.insert(policyEvaluations).values({
+        eventId,
+        policyVersion: live.version,
+        gateResult: d.gateResult,
+        rulesTrace: d.rulesTrace,
+      });
+
+      return d;
+    });
+
+    if (decision.result !== 'allow') {
+      await step.run('abandon', async () => {
+        // Re-read rather than trusting the memoised snapshot: an attempt that
+        // has already gone out cannot be un-sent, and marking it 'stopped'
+        // would be a lie in the ledger.
+        const [fresh] = await db
+          .select({ executedAt: recoveryAttempts.executedAt })
+          .from(recoveryAttempts)
+          .where(eq(recoveryAttempts.id, attemptId))
+          .limit(1);
+        if (fresh?.executedAt) return;
+
+        await db
+          .update(recoveryAttempts)
+          .set({ outcome: 'stopped', outcomeAt: new Date() })
+          .where(eq(recoveryAttempts.id, attemptId));
+        await db
+          .update(paymentEvents)
+          .set({ state: 'blocked_by_policy' })
+          .where(eq(paymentEvents.id, eventId));
+      });
+      return { eventId, attemptId, blockedAtExecution: decision.gateResult };
+    }
+
+    // ── Create the link ────────────────────────────────────────────────
+    const rail = snapshot.attempt.rail as Rail;
+    const channel = RAIL_CHANNEL[rail] ?? 'email';
+
+    const link = await step.run('create-payment-link', async () => {
+      try {
+        return await createPaymentLink({
+          amountPaise: snapshot.pe.amountPaise,
+          currency: snapshot.pe.currency,
+          description: `Retry for ${snapshot.pe.id}`,
+          // Razorpay notifies the customer directly, which is what makes this
+          // rail end to end without a separate email or WhatsApp provider.
+          notify: { sms: channel === 'sms', email: channel === 'email' },
+          // The attempt's own UUID. Razorpay enforces reference_id uniqueness
+          // per account, so this doubles as the idempotency key — and unlike
+          // `${eventId}:${attemptNo}` it is fresh after a database reset, so
+          // re-running the demo does not collide with last run's links.
+          referenceId: attemptId,
+          expireBy: new Date(Date.now() + LINK_TTL_HOURS * 3600_000),
+          notes: {
+            leakproof_event: eventId,
+            rail,
+            attempt: String(snapshot.attempt.attemptNo),
+          },
+        });
+      } catch (err) {
+        if (err instanceof RazorpayError && !err.retriable) {
+          // A technical failure on our side is never counted as a customer
+          // failure — that would poison the incrementality result.
+          throw new NonRetriableError(`Razorpay rejected the link: ${err.code} ${err.message}`);
+        }
+        throw err;
+      }
+    });
+
+    // ── Record the spend and the message ───────────────────────────────
+    await step.run('record-send', async () => {
+      const costItem: CostItem =
+        channel === 'whatsapp'
+          ? 'whatsapp_utility_message'
+          : channel === 'email'
+            ? 'email_message'
+            : 'sms_message';
+      const cost = costOf(costItem) + costOf('payment_link_created');
+
+      const body = renderTemplate(rail, {
+        merchantName: MERCHANT_NAME,
+        amountPaise: snapshot.pe.amountPaise,
+        shortUrl: link.short_url,
+        failureClass: 'n/a',
+      });
+
+      await db
+        .update(recoveryAttempts)
+        .set({ executedAt: new Date(), razorpayLinkId: link.id, costPaise: cost })
+        .where(eq(recoveryAttempts.id, attemptId));
+
+      await db.insert(messages).values({
+        attemptId,
+        channel,
+        language: 'en',
+        body,
+        // Static template for now. composeMessage() over Gemini slots in behind
+        // the same interface; until it does, every message is a fallback and
+        // is honestly recorded as one.
+        usedFallback: true,
+        sentAt: new Date(),
+        costPaise: costOf(costItem),
+      });
+
+      await db
+        .update(paymentEvents)
+        .set({ state: 'action_sent' })
+        .where(eq(paymentEvents.id, eventId));
+    });
+
+    return {
+      eventId,
+      attemptId,
+      rail,
+      channel,
+      linkId: link.id,
+      shortUrl: link.short_url,
+      appUrl: env.appUrl,
+    };
+  },
+);
