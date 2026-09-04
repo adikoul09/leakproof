@@ -22,7 +22,7 @@ Razorpay Buildathon, Track 03.
 | 2 | Policy engine (caps, contact window, stop_on, breaker) | ✅ working, 41 tests |
 | 3 | One recovery rail end to end (Razorpay Payment Link) | ✅ real links created |
 | 4 | Control group + incrementality maths | ✅ validated against a planted effect |
-| 5 | Hash-chained audit ledger | 🟡 table + append-only trigger live |
+| 5 | Hash-chained audit ledger | ✅ every decision writes a receipt |
 | 6 | Synthetic data generator | 🟡 ingest endpoint live, generator pending |
 | 7 | Control Tower dashboard | ⬜ |
 | 8 | Replay / what-if engine | ⬜ |
@@ -64,7 +64,8 @@ Other scripts: `npm test`, `npm run typecheck`, `npm run db:generate`,
 `npm run db:studio`, `npm run db:reset -- --yes` (development only), and
 `npm run gate -- <event_id>` to print the policy trace for a real event, and
 `npm run validate:incrementality` to plant a known effect and check the maths
-recovers it.
+recovers it, and `npm run ledger:tamper` to attack the hash chain and watch it
+detect the tampering.
 
 ---
 
@@ -325,6 +326,67 @@ the result rather than papered over — and it revealed that the blueprint's
 Endpoints: `GET /api/metrics/summary?from=&to=&seed=` and
 `GET /api/metrics/timeseries?bucket=5m`.
 
+### The audit ledger
+
+Every decision writes a receipt. `sha256(prev_hash + canonical(record))`, so
+any edit to any row invalidates every hash after it.
+
+A complete audit trail for one payment — the "receipt for one rupee":
+
+```
+$ curl '/api/ledger?event_id=pay_M3TEST0000'
+
+  seq   3  classified     gate=-
+  seq   7  arm_assigned   gate=-
+  seq  12  planned        gate=allow:contact_window,under_caps
+  seq  15  action_sent    gate=allow:contact_window,under_caps
+```
+
+The control arm gets receipts too — `held_out_control` records that we
+deliberately did nothing. The experiment's credibility depends on being able to
+prove that, not just assert it.
+
+**Three layers of protection, and they catch different things:**
+
+1. **The database refuses to change it.** `UPDATE` and `DELETE` on
+   `audit_ledger` raise, enforced by a trigger rather than application code, so
+   it holds against a direct `psql` session.
+2. **The chain catches content edits.** Every field, at every depth, is hashed.
+3. **The chain catches structural edits.** A deleted, inserted or reordered row
+   breaks the link.
+
+Verified by attacking it — `npm run ledger:tamper`:
+
+```
+attack 1  UPDATE via SQL           → refused by the append-only trigger
+attack 2  edit a nested detail     → content_edit detected at seq 3
+attack 3  delete a middle row      → broken_link detected at seq 4
+```
+
+`verifyChain()` reports *which* row broke and *how*, because "the chain is
+broken" is not actionable and "seq 4 does not point at the row before it — a
+row was deleted, inserted or reordered" is.
+
+**Canonical serialisation is written out, not a one-liner.** Keys sorted at
+every depth, array order preserved, and values JSON cannot round-trip
+(`NaN`, `Infinity`, `bigint`) rejected rather than silently coerced to `null`.
+The blueprint's suggested one-liner used an array replacer, which is an
+allow-list applying at *every* nesting level — it would have left the entire
+`detail` payload out of the hash, which is exactly the field worth tampering
+with. FAILURES.md #10.
+
+**Appends are serialised by a transaction-scoped advisory lock**, not
+`SELECT ... FOR UPDATE` on the head row: `FOR UPDATE` locks rows that exist,
+and the first append has no head row to lock, so two concurrent genesis appends
+would fork the chain at row one.
+
+Endpoints: `GET /api/ledger` (keyset pagination, filter by arm/action/event/
+outcome/date), `GET /api/ledger/verify` (public and unauthenticated — the point
+of a hash chain is that anyone can check it; returns **500** on a break so
+monitoring cannot ignore it), `GET /api/ledger/export.csv` (streamed, includes
+both hashes so the export verifies independently of this app). `ledger.verify`
+also runs hourly as a cron.
+
 ### Recovery detection
 
 Two paths, deliberately distinct:
@@ -386,7 +448,8 @@ src/core/
   messaging/  templates.ts
   cost/       meter.ts
   experiment/ assign.ts, stats.ts, metrics.ts, metrics-store.ts, recovery.ts
-  ledger/ replay/                                                ← milestones 5, 8
+  ledger/     canonical.ts, append.ts, verify.ts
+  replay/                                                        ← milestone 8
 src/jobs/     Inngest function definitions
 src/app/api/  route handlers
 scripts/      migrate, reset, dns-fallback

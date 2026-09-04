@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { GLOBAL_SCOPE } from '@/core/policy/breaker';
 import { closeBreaker, openBreaker, readBreaker } from '@/core/policy/breaker-store';
+import { appendLedgerSafe } from '@/core/ledger/append';
 import { requireOperator } from '@/lib/auth';
 import { errorResponse, requestId } from '@/lib/errors';
 
@@ -59,9 +60,20 @@ export async function POST(req: Request) {
     );
   }
 
-  // TODO(milestone 5): this is a human decision and belongs in the ledger.
+  const receipt = await appendLedgerSafe({
+    action: action === 'close' ? 'breaker_closed_by_operator' : 'breaker_opened_by_operator',
+    actor,
+    detail: { scope, reason },
+  });
+
   return NextResponse.json(
-    { ...(await readBreaker(scope)), actor, reason },
+    {
+      ...(await readBreaker(scope)),
+      actor,
+      reason,
+      ledger_seq: receipt?.seq ?? null,
+      ...(receipt ? {} : { warning: 'breaker changed but the ledger receipt failed to write' }),
+    },
     { headers: { 'x-request-id': reqId } },
   );
 }

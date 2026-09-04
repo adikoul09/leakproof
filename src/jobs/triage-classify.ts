@@ -17,6 +17,7 @@ import { db } from '@/db/client';
 import { classifications, paymentEvents } from '@/db/schema';
 import { classify, cohortDim, cohortKey } from '@/core/triage/classifier';
 import { postgresCohortStore } from '@/core/triage/cohort-store';
+import { appendLedgerSafe } from '@/core/ledger/append';
 import { inngest } from '@/lib/inngest';
 
 export const triageClassify = inngest.createFunction(
@@ -96,6 +97,24 @@ export const triageClassify = inngest.createFunction(
           },
         });
     });
+
+    await step.run('ledger', () =>
+      appendLedgerSafe({
+        eventId,
+        failureClass: result.failureClass,
+        action: 'classified',
+        detail: {
+          kind: result.kind,
+          confidence: result.confidence,
+          cohort_key: result.cohortKey,
+          cohort_n: result.cohortN,
+          cohort_decline_rate: result.cohortDeclineRate,
+          verdict: result.trace.verdict,
+          taxonomy_matched_on: result.trace.taxonomy.matchedOn,
+          systemic_checks: result.trace.systemic.checks,
+        },
+      }),
+    );
 
     // Settle the state. 'classifying' is an in-flight marker, not a resting
     // place — an event left in it looks stuck. Back to 'at_risk', which is

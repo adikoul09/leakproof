@@ -20,6 +20,7 @@ import { parsePolicy } from '@/core/policy/schema';
 import { getLivePolicy } from '@/core/policy/store';
 import { RAIL_DELAY_HOURS, chooseRail, chooseRailNaive } from '@/core/routing/static-table';
 import type { FailureClass } from '@/core/triage/taxonomy';
+import { appendLedgerSafe } from '@/core/ledger/append';
 import { inngest } from '@/lib/inngest';
 
 export const recoveryPlan = inngest.createFunction(
@@ -31,6 +32,17 @@ export const recoveryPlan = inngest.createFunction(
     // The held-out arm. No rail, no policy evaluation, no contact — it stays
     // 'at_risk' because that is exactly what it is.
     if (arm === 'control') {
+      // Doing nothing to a held-out event is a decision, and the experiment's
+      // credibility depends on being able to prove we did nothing.
+      await step.run('ledger-held-out', () =>
+        appendLedgerSafe({
+          eventId,
+          arm,
+          action: 'held_out_control',
+          outcome: 'no_action',
+          detail: { reason: 'control arm — never contacted, by design' },
+        }),
+      );
       return { eventId, arm, action: 'held_out' };
     }
 
@@ -108,6 +120,18 @@ export const recoveryPlan = inngest.createFunction(
         });
         await db.update(paymentEvents).set({ state: 'lost' }).where(eq(paymentEvents.id, eventId));
       });
+      await step.run('ledger-do-nothing', () =>
+        appendLedgerSafe({
+          eventId,
+          arm,
+          failureClass: plan.failureClass,
+          policyVersion: live.version,
+          gateResult: decision.gateResult,
+          action: 'rail_do_nothing',
+          outcome: 'stopped',
+          detail: { attempt_no: plan.attemptNo, why: plan.railScores.why },
+        }),
+      );
       return { eventId, arm, rail: 'do_nothing', gate: decision.gateResult };
     }
 
@@ -117,6 +141,18 @@ export const recoveryPlan = inngest.createFunction(
           .update(paymentEvents)
           .set({ state: 'blocked_by_policy' })
           .where(eq(paymentEvents.id, eventId)),
+      );
+      await step.run('ledger-blocked', () =>
+        appendLedgerSafe({
+          eventId,
+          arm,
+          failureClass: plan.failureClass,
+          policyVersion: live.version,
+          gateResult: decision.gateResult,
+          action: 'blocked_by_policy',
+          outcome: 'no_action',
+          detail: { rail: plan.rail, reasons: decision.reasons, rules_trace: decision.rulesTrace },
+        }),
       );
       return { eventId, arm, rail: plan.rail, gate: decision.gateResult, reasons: decision.reasons };
     }
@@ -149,6 +185,26 @@ export const recoveryPlan = inngest.createFunction(
 
       return row.id;
     });
+
+    await step.run('ledger-planned', () =>
+      appendLedgerSafe({
+        eventId,
+        arm,
+        failureClass: plan.failureClass,
+        policyVersion: live.version,
+        gateResult: decision.gateResult,
+        action: decision.result === 'defer' ? 'deferred' : 'planned',
+        detail: {
+          rail: plan.rail,
+          chosen_by: plan.chosenBy,
+          rail_alternatives: plan.railScores.considered,
+          why: plan.railScores.why,
+          attempt_no: plan.attemptNo,
+          scheduled_for: scheduledFor.toISOString(),
+          rules_trace: decision.rulesTrace,
+        },
+      }),
+    );
 
     await step.sendEvent('queue-execution', {
       name: 'recovery.execute',

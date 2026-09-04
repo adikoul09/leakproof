@@ -12,6 +12,7 @@ import { db } from '@/db/client';
 import { armAssignments } from '@/db/schema';
 import { assignArm } from '@/core/experiment/assign';
 import { env } from '@/lib/env';
+import { appendLedgerSafe } from '@/core/ledger/append';
 import { inngest } from '@/lib/inngest';
 
 export const experimentAssign = inngest.createFunction(
@@ -46,6 +47,15 @@ export const experimentAssign = inngest.createFunction(
         .limit(1);
       return { arm: stored.arm, bucket: stored.bucket };
     });
+
+    await step.run('ledger', () =>
+      appendLedgerSafe({
+        eventId,
+        arm: assignment.arm,
+        action: 'arm_assigned',
+        detail: { bucket: assignment.bucket },
+      }),
+    );
 
     await step.sendEvent('announce', {
       name: 'event.assigned',

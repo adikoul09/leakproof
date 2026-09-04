@@ -7,6 +7,7 @@
  */
 import { NextResponse } from 'next/server';
 import { getPolicy, publishPolicy } from '@/core/policy/store';
+import { appendLedgerSafe } from '@/core/ledger/append';
 import { requireOperator } from '@/lib/auth';
 import { errorResponse, requestId } from '@/lib/errors';
 
@@ -27,14 +28,29 @@ export async function POST(req: Request, ctx: { params: Promise<{ version: strin
 
   const published = await publishPolicy(version);
 
-  // TODO(milestone 5): write the ledger row for this publish. The chain does
-  // not exist yet; when it does, a policy publish is a first-class actor event.
+  const receipt = await appendLedgerSafe({
+    policyVersion: published.version,
+    action: 'policy_published',
+    actor: `operator:${auth.operator.email}`,
+    detail: {
+      previous_status: existing.status,
+      published_at: published.publishedAt?.toISOString() ?? null,
+      caps: published.policy.caps,
+      contact_window: published.policy.contact_window,
+      breaker_trigger: published.policy.breaker.source,
+    },
+  });
+
   return NextResponse.json(
     {
       version: published.version,
       status: published.status,
       published_at: published.publishedAt,
       actor: `operator:${auth.operator.email}`,
+      // Surfaced rather than assumed: if the receipt could not be written the
+      // operator needs to know the change is live but unrecorded.
+      ledger_seq: receipt?.seq ?? null,
+      ...(receipt ? {} : { warning: 'policy is live but the ledger receipt failed to write' }),
     },
     { headers: { 'x-request-id': reqId } },
   );

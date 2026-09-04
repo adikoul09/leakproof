@@ -15,7 +15,7 @@
 import { NonRetriableError } from 'inngest';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { customers, messages, paymentEvents, policyEvaluations, recoveryAttempts } from '@/db/schema';
+import { armAssignments, customers, messages, paymentEvents, policyEvaluations, recoveryAttempts } from '@/db/schema';
 import { buildPolicyContext } from '@/core/policy/context';
 import { evaluatePolicy } from '@/core/policy/evaluate';
 import { parsePolicy } from '@/core/policy/schema';
@@ -24,6 +24,7 @@ import { RAIL_CHANNEL, renderTemplate } from '@/core/messaging/templates';
 import { RazorpayError, createPaymentLink } from '@/core/rails/razorpay';
 import { costOf, type CostItem } from '@/core/cost/meter';
 import type { Rail } from '@/core/routing/static-table';
+import { appendLedgerSafe } from '@/core/ledger/append';
 import { env } from '@/lib/env';
 import { inngest } from '@/lib/inngest';
 
@@ -59,7 +60,16 @@ export const recoveryExecute = inngest.createFunction(
         ? await db.select().from(customers).where(eq(customers.id, pe.customerId)).limit(1)
         : [undefined];
 
-      return { attempt, pe, customer: customer ?? null };
+      // Carried into the ledger so audit rows can be filtered by arm — without
+      // it the ledger cannot answer "show me everything we did to the naive
+      // arm", which is the question an experiment audit starts with.
+      const [assignment] = await db
+        .select({ arm: armAssignments.arm })
+        .from(armAssignments)
+        .where(eq(armAssignments.eventId, eventId))
+        .limit(1);
+
+      return { attempt, pe, customer: customer ?? null, arm: assignment?.arm ?? null };
     });
 
     // Already executed — a retry of this step must not send twice.
@@ -125,6 +135,20 @@ export const recoveryExecute = inngest.createFunction(
           .set({ state: 'blocked_by_policy' })
           .where(eq(paymentEvents.id, eventId));
       });
+      await step.run('ledger-blocked-at-execution', () =>
+        appendLedgerSafe({
+          eventId,
+          arm: snapshot.arm,
+          gateResult: decision.gateResult,
+          action: 'blocked_at_execution',
+          outcome: 'stopped',
+          detail: {
+            attempt_id: attemptId,
+            reasons: decision.reasons,
+            note: 'policy re-checked at execution time and no longer allowed the action',
+          },
+        }),
+      );
       return { eventId, attemptId, blockedAtExecution: decision.gateResult };
     }
 
@@ -203,6 +227,27 @@ export const recoveryExecute = inngest.createFunction(
         .set({ state: 'action_sent' })
         .where(eq(paymentEvents.id, eventId));
     });
+
+    await step.run('ledger-sent', () =>
+      appendLedgerSafe({
+        eventId,
+        arm: snapshot.arm,
+        gateResult: decision.gateResult,
+        action: 'action_sent',
+        outcome: 'awaiting_response',
+        costPaise: costOf(
+          channel === 'whatsapp' ? 'whatsapp_utility_message' : channel === 'email' ? 'email_message' : 'sms_message',
+        ) + costOf('payment_link_created'),
+        detail: {
+          attempt_id: attemptId,
+          rail,
+          channel,
+          razorpay_link_id: link.id,
+          short_url: link.short_url,
+          used_fallback: true,
+        },
+      }),
+    );
 
     return {
       eventId,

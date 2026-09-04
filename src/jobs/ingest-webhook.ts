@@ -8,11 +8,12 @@
 import { NonRetriableError } from 'inngest';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { webhookReceipts } from '@/db/schema';
+import { armAssignments, webhookReceipts } from '@/db/schema';
 import { normalizeWebhook } from '@/core/ingest/normalize';
 import { insertPaymentEvent, upsertCustomer } from '@/core/ingest/persist';
 import { cohortDim } from '@/core/triage/classifier';
 import { recordLinkPaid, recordPaymentCaptured } from '@/core/experiment/recovery';
+import { appendLedgerSafe } from '@/core/ledger/append';
 import { postgresCohortStore } from '@/core/triage/cohort-store';
 import { inngest } from '@/lib/inngest';
 
@@ -45,6 +46,32 @@ export const ingestWebhook = inngest.createFunction(
           : recordPaymentCaptured(rec.paymentId, rec.orderId, rec.amountPaise, new Date(rec.at)),
       );
       if (outcome.eventId) {
+        // The receipt for a rupee coming back. `attributed` distinguishes a
+        // link we sent from an organic recovery, which is the difference the
+        // whole incrementality result turns on.
+        if (!outcome.alreadyRecovered) {
+          const arm = await step.run('load-arm', async () => {
+            const [a] = await db
+              .select({ arm: armAssignments.arm })
+              .from(armAssignments)
+              .where(eq(armAssignments.eventId, outcome.eventId!))
+              .limit(1);
+            return a?.arm ?? null;
+          });
+          await step.run('ledger-recovered', () =>
+            appendLedgerSafe({
+              eventId: outcome.eventId,
+              arm,
+              action: 'recovered',
+              outcome: rec.kind === 'link_paid' ? 'paid_via_link' : 'paid_organically',
+              detail: {
+                attributed: outcome.attributed,
+                amount_paise: rec.amountPaise,
+                signal: rec.kind,
+              },
+            }),
+          );
+        }
         await step.run('mark-processed', () => markProcessed(receiptId));
         return {
           recovered: outcome.eventId,

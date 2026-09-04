@@ -414,6 +414,86 @@ can support.
 
 ---
 
+## 10. The blueprint's canonical serialiser left the most tamper-worthy field unhashed
+
+**When:** Milestone 5, implementing the audit hash chain.
+
+The blueprint gives the chain in two lines (6.3):
+
+```ts
+const canonical = (r: LedgerInput) => JSON.stringify(r, Object.keys(r).sort());
+const hash = sha256(prevHash + canonical(record));
+```
+
+It looks right. Sorting the keys is exactly the correct instinct — without it,
+two logically identical records hash differently depending on insertion order.
+I nearly used it as written.
+
+**The second argument to `JSON.stringify` is a replacer, and an array replacer
+is an allow-list that applies at every level of nesting.** So for a record like:
+
+```js
+{ action: 'send', detail: { rail: 'upi_payment_link', cost_paise: 20 } }
+```
+
+the allow-list is `['action', 'detail']`, and because `rail` and `cost_paise`
+are not in it, the nested object serialises as `{}`:
+
+```
+{"action":"send","detail":{}}
+```
+
+**The entire `detail` payload never reaches the hash.** And `detail` is where
+everything worth tampering with lives: the rail chosen, the amount, the rules
+trace, the operator's stated reason for overriding a circuit breaker. Someone
+with database access could rewrite every `detail` field in the table and
+`verifyChain()` would report the chain fully intact.
+
+An audit ledger that does not protect the audit trail is worse than no ledger,
+because it manufactures confidence.
+
+**Fix:** a real recursive canonicaliser — sorts keys at every depth, preserves
+array order (an array is ordered data; sorting would make `['allow','block']`
+and `['block','allow']` identical), normalises `-0`, and **throws** on values
+JSON cannot round-trip rather than letting `NaN` and `Infinity` silently become
+`null`. Hashing a quietly degraded record is worse than refusing to hash it.
+
+The blueprint's one-liner is kept in `canonical.test.ts` as an executable
+record of the bug: the test asserts that a tampered `detail` hashes *identically*
+under it and *differently* under ours. If anyone ever simplifies the file back
+to the one-liner, that test explains what broke.
+
+**Proved rather than asserted.** `npm run ledger:tamper` builds a chain and
+attacks it three ways:
+
+```
+attack 1  UPDATE via SQL          → refused by the append-only trigger
+attack 2  edit a nested detail    → content_edit detected at seq 3
+          (the case the one-liner would have missed)
+attack 3  delete a middle row     → broken_link detected at seq 4
+```
+
+**A second correction, same file.** The blueprint says to `SELECT ... FOR
+UPDATE` the head row so concurrent appends cannot fork the chain. Right
+instinct, and it does not quite work: `FOR UPDATE` locks rows that *exist*, and
+the first append has no head row to lock. Two concurrent genesis appends would
+both read "no head", both use the genesis prev_hash, and fork the chain at row
+one. Replaced with a transaction-scoped **advisory lock**, which exists whether
+or not the row does and releases itself on commit or rollback.
+
+**Cost:** ~40 minutes.
+
+**What it means:** this is the third time in this build that correct-looking
+code produced a *plausible* wrong answer rather than an error — after the EWMA
+baseline (#3) and the policy gate replaying outside a step (#7). The pattern is
+consistent enough to be worth naming: **the dangerous bugs here are the ones
+that still return something.** None of them would have been caught by a test
+that asserts the code does what the code does; all three needed a test that
+asks whether the *claim* is true — does detection still fire, does the gate run
+once, does tampering get caught.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.
