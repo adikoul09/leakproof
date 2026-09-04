@@ -102,9 +102,39 @@ export function CostToday({ metrics }: { metrics: MetricsSummary | null }) {
           </div>
         ))
       )}
+      {entries.length === 0 && (
+        <p className="text-[11.5px]" style={{ color: 'var(--text-muted)' }}>
+          Delivery is bundled with the Razorpay payment link — no SMS gateway, no email provider,
+          and Gemini is free at this volume. Nothing is billed per attempt.
+        </p>
+      )}
+
+      {/*
+        Reported separately and never summed into the line above. A per-message
+        cost is incurred on every attempt including the failures; MDR is charged
+        only on capture. Adding them makes "cost per ₹100 recovered" meaningless.
+      */}
+      <div
+        className="mt-1 flex flex-col gap-0.5 pt-2"
+        style={{ borderTop: '1px solid var(--border-subtle)' }}
+      >
+        <div className="flex justify-between text-[12.5px]">
+          <span style={{ color: 'var(--text-secondary)' }}>
+            Razorpay fee on recovered ({(metrics.razorpay_fee.effective_rate * 100).toFixed(2)}%)
+          </span>
+          <span className="tnum" style={{ color: 'var(--text-muted)' }}>
+            {rupees(metrics.razorpay_fee.on_gross_recovered_paise)}
+          </span>
+        </div>
+        <p className="text-[11px] leading-[15px]" style={{ color: 'var(--text-muted)' }}>
+          Charged on capture, not per attempt — so it is a fee on money that would otherwise have
+          been lost, not a cost of trying. Kept out of the figure above for that reason.
+        </p>
+      </div>
+
       {metrics.unpriced_cost_items.length > 0 && (
         <p className="mt-1 text-[11.5px]" style={{ color: 'var(--warning)' }}>
-          Placeholder rates: {metrics.unpriced_cost_items.join(', ')}. Cost figures are indicative.
+          Still a placeholder: {metrics.unpriced_cost_items.join(', ')}.
         </p>
       )}
     </Panel>

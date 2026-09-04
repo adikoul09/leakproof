@@ -189,8 +189,8 @@ export function TraceDrawer({ eventId, onClose }: { eventId: string | null; onCl
   return (
     <>
       <div
-        className="fixed inset-0 z-40"
-        style={{ background: 'rgba(4,8,16,0.6)' }}
+        className="drawer-scrim fixed inset-0 z-40"
+        style={{ background: 'rgba(4,8,16,0.62)', backdropFilter: 'blur(2px)' }}
         onClick={onClose}
         aria-hidden
       />
@@ -198,7 +198,7 @@ export function TraceDrawer({ eventId, onClose }: { eventId: string | null; onCl
         role="dialog"
         aria-modal="true"
         aria-label="Decision trace"
-        className="fixed top-0 right-0 z-50 flex h-full w-full max-w-[620px] flex-col"
+        className="drawer-panel fixed top-0 right-0 z-50 flex h-full w-full max-w-[620px] flex-col"
         style={{
           background: 'var(--bg-base)',
           borderLeft: '1px solid var(--border-strong)',
@@ -219,7 +219,7 @@ export function TraceDrawer({ eventId, onClose }: { eventId: string | null; onCl
             onClick={onClose}
             aria-label="Close trace"
             autoFocus
-            className="cursor-pointer rounded-sm px-2 py-1 text-[12px]"
+            className="press cursor-pointer rounded-sm px-2 py-1 text-[12px] transition-colors hover:text-[var(--text-primary)]"
             style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
           >
             Esc

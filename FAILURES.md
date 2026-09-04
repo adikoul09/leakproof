@@ -1200,6 +1200,64 @@ deliberately first.
 
 ---
 
+## 26. The entry screen nearly became a second polling client
+
+**When:** Milestone 9, building `/` as a real screen instead of a redirect to
+`/tower`.
+
+**Symptom:** none, at first. The entry screen fetches `/api/metrics/summary` and
+`/api/ledger/verify` so its figures are live rather than illustrative, and both
+went into the same 15-second `setInterval`. It looked fine locally.
+
+**Diagnosis:** `/api/ledger/verify` is not a read. It walks the entire chain and
+rehashes every record — 8,514 of them at the time, and it was measured at 3.7–6.7
+seconds per call. On one deployed instance shared by several judges, a landing
+page left open in a background tab would have re-run a multi-second full-table
+scan every fifteen seconds per tab, against the same database the Control Tower
+polls every five. The tower would have got slower the more people looked at the
+front page.
+
+**Fix:** the chain is verified exactly once, on mount, and only the metrics
+summary stays on the interval. The badge is still a real verification — that is
+the whole point of putting it there — but it is a verification, not a
+heartbeat.
+
+**Cost:** ~5 minutes, all of it before it could cost anything.
+**What it means:** a cheap-looking `fetch` on a marketing-ish surface can be the
+most expensive query in the system. The rule that came out of it: anything on a
+public, always-open screen gets its cost checked before it gets a timer.
+
+---
+
+## 27. Display type clipped its own descenders on a phone
+
+**When:** Milestone 9, checking the entry screen at 390px.
+
+**Symptom:** the headline's second wrapped line was shaved along the bottom — the
+baseline of "revenue." was visibly cut. Only on narrow viewports; invisible at
+every desktop width.
+
+**Diagnosis:** the mask-reveal effect works by wrapping each headline line in an
+`overflow: hidden` box and sliding the text out of it. At desktop sizes each line
+is one line and the `0.08em` of bottom padding cleared the descenders. On a phone
+the same line wraps to two, and the clip box — sized to the text — cut the second
+row.
+
+**Fix:** `0.14em`, plus the eyebrow's second phrase is dropped below `sm` rather
+than allowed to wrap into three ragged lines at 0.22em tracking.
+
+**Cost:** ~10 minutes, found by screenshotting the page at 390px rather than by
+assuming it was fine.
+**What it means:** clipping is how every mask-based type animation works, so
+every one of them is a wrapping bug waiting for a narrow viewport. Checked at
+390, 1440 and 1600, and with `prefers-reduced-motion: reduce` — where the risk is
+the opposite one, elements that start at `opacity: 0` and never animate to
+visible. They resolve correctly because the reveals are animations with
+`fill-mode: both`, not transitions: the reduced-motion rule collapses the
+duration but the end state still applies.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

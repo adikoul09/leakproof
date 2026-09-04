@@ -12,8 +12,9 @@
  * Nothing here is mocked, and where a number cannot be supported the screen
  * says so rather than showing it confidently.
  */
+import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Badge, Panel, istTime } from '@/components/primitives';
+import { Badge, ConsoleNav, Panel, istTime } from '@/components/primitives';
 import { KpiStrip, OutageBanner, ArmComparison, type MetricsSummary, type LiveOutage } from '@/components/tower/kpi';
 import { AtRiskQueueTable, QueueFilterTabs, type QueueFilter, type QueueRow } from '@/components/tower/queue-table';
 import { Caveats, ContactBudget, CostToday, FailureMix } from '@/components/tower/rail';
@@ -121,7 +122,10 @@ export function TowerClient({ initialEventId }: { initialEventId: string | null 
     const tick = async () => {
       try {
         const [s, m] = await Promise.all([
-          fetch('/api/status?window_minutes=180').then((r) => r.json()),
+          // A full day. A generated batch replays 24 hours in minutes, so a
+          // three-hour window shows an empty console for a corpus that is
+          // entirely about what happened over the last day.
+          fetch('/api/status?window_minutes=1440').then((r) => r.json()),
           fetch('/api/metrics/summary').then((r) => r.json()),
         ]);
         if (!alive) return;
@@ -152,14 +156,26 @@ export function TowerClient({ initialEventId }: { initialEventId: string | null 
   }, []);
 
   return (
-    <div className="mx-auto flex h-screen max-w-[1600px] flex-col gap-2 p-3">
-      <header className="flex shrink-0 flex-wrap items-center gap-3">
-        <span className="text-[17px] font-semibold tracking-tight" style={{ color: 'var(--accent)' }}>
-          ▣ LEAKPROOF
-        </span>
-        <span className="label" style={{ letterSpacing: '0.08em' }}>
-          Revenue recovery control tower
-        </span>
+    <div className="stagger-shell mx-auto flex h-screen max-w-[1600px] flex-col gap-2 p-3">
+      <header
+        className="flex shrink-0 flex-wrap items-center gap-3 rounded-[10px] px-3 py-2"
+        style={{
+          background: 'var(--glass)',
+          border: '1px solid var(--border-subtle)',
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+        }}
+      >
+        <Link
+          href="/"
+          className="group flex items-center gap-2 text-[17px] font-semibold tracking-tight"
+          style={{ color: 'var(--accent)' }}
+          title="Back to the entry screen"
+        >
+          <span className="inline-block transition-transform duration-500 group-hover:rotate-90">▣</span>
+          LEAKPROOF
+        </Link>
+        <ConsoleNav active="tower" />
         <Badge tone="warn">{status?.mode === 'live' ? 'LIVE MODE' : 'TEST MODE'}</Badge>
         <Badge tone="muted">All data synthetic</Badge>
 

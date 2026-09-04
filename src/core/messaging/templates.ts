@@ -24,7 +24,13 @@ export interface TemplateInput {
 const rupees = (paise: number) =>
   `₹${(paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 
-const OPT_OUT = 'Reply STOP to opt out.';
+/**
+ * The exact wording matters. This is the mechanism behind the
+ * `customer_opt_out` stop condition, not a legal footer — a reminder that does
+ * not say what it is opting out OF invites a STOP that silences transactional
+ * messages the customer actually wants.
+ */
+const OPT_OUT = 'Reply STOP to opt out of payment reminders.';
 
 /**
  * Keyed by rail, because what to say follows from what we are asking the

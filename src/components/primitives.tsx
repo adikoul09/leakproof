@@ -5,6 +5,7 @@
  * call for a product; for a two-day build the risk is spending the afternoon on
  * a Button component instead of on the screen the judges look at.
  */
+import Link from 'next/link';
 import type { ReactNode } from 'react';
 
 /** Money is paise everywhere in this system. It becomes rupees only here. */
@@ -160,7 +161,7 @@ export function Panel({
 }) {
   return (
     <section
-      className={`flex min-h-0 flex-col rounded-[10px] ${className}`}
+      className={`panel-hover hairline flex min-h-0 flex-col rounded-[10px] ${className}`}
       style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)' }}
     >
       {title !== undefined && (
@@ -183,5 +184,40 @@ export function Empty({ message, action }: { message: string; action?: ReactNode
       <p style={{ color: 'var(--text-secondary)' }}>{message}</p>
       {action}
     </div>
+  );
+}
+
+/**
+ * The two screens of the console, addressed the same way from both of them.
+ * Small thing, but before this the only way from /replay back to /tower was a
+ * text link in the corner and there was no way to reach /replay from /tower at
+ * all — the judge had to type the URL.
+ */
+export function ConsoleNav({ active }: { active: 'tower' | 'replay' }) {
+  const items = [
+    { href: '/tower', key: 'tower', label: 'Control tower' },
+    { href: '/replay', key: 'replay', label: 'Replay & what-if' },
+  ] as const;
+  return (
+    <nav className="flex items-center gap-1" aria-label="Console">
+      {items.map((it) => {
+        const on = it.key === active;
+        return (
+          <Link
+            key={it.key}
+            href={it.href}
+            aria-current={on ? 'page' : undefined}
+            className="rounded-[6px] px-2.5 py-1 text-[12.5px] transition-colors duration-200"
+            style={{
+              color: on ? 'var(--accent)' : 'var(--text-secondary)',
+              background: on ? 'var(--accent-dim)' : 'transparent',
+              border: `1px solid ${on ? 'rgba(20,184,166,0.3)' : 'transparent'}`,
+            }}
+          >
+            {it.label}
+          </Link>
+        );
+      })}
+    </nav>
   );
 }

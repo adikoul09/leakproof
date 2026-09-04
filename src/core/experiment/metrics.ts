@@ -36,6 +36,7 @@ import {
   twoProportionZTest,
   wilsonInterval,
 } from './stats';
+import { MDR_EFFECTIVE_RATE, RAZORPAY_MDR, mdrOnRecoveredPaise } from '@/core/cost/meter';
 import type { Arm } from './assign';
 
 export interface MetricEvent {
@@ -87,8 +88,33 @@ export interface MetricsSummary {
    * not buried in a methodology note.
    */
   caveats: string[];
-  /** Paise spent per ₹100 of incremental revenue. */
+  /**
+   * Paise spent per ₹100 of incremental revenue — the cost of *attempting*
+   * recovery. Currently zero, and honestly so: delivery is Razorpay's own
+   * notification on the payment link, bundled with the link, and there is no
+   * separate SMS gateway or email provider to bill. See `RATES` for the sources.
+   */
   cost_per_100_recovered_paise: number;
+  /**
+   * Razorpay's fee on the money actually recovered, reported SEPARATELY and
+   * never folded into the line above.
+   *
+   * A per-message cost is incurred on every attempt including the failures — it
+   * is the price of trying. MDR is charged only on capture, so it scales with
+   * success. Summed together, spending more on failed attempts and recovering
+   * more money would push the same number the same way, and "cost per ₹100
+   * recovered" would stop meaning anything.
+   *
+   * It is also not a cost this system causes: the merchant pays MDR on any
+   * captured payment. This is the fee on money that would otherwise have been
+   * lost entirely.
+   */
+  razorpay_fee: {
+    on_incremental_paise: number;
+    on_gross_recovered_paise: number;
+    effective_rate: number;
+    note: string;
+  };
   false_nudge_rate: number;
   contact_budget: { used: number; cap: number };
   cost_breakdown_paise: Record<string, number>;
@@ -243,6 +269,9 @@ export function computeMetrics(arms: ArmsInput, opts: ComputeOptions = {}): Metr
   const totalCost = summary.control.cost_paise + summary.naive.cost_paise + summary.leakproof.cost_paise;
   const costPer100 = incremental <= 0 ? 0 : totalCost / (incremental / 10_000);
 
+  const grossRecovered =
+    summary.control.gross_paise + summary.naive.gross_paise + summary.leakproof.gross_paise;
+
   const tickets = [summary.control, summary.naive, summary.leakproof]
     .filter((a) => a.n > 0)
     .map((a) => a.mean_ticket_paise);
@@ -275,6 +304,12 @@ export function computeMetrics(arms: ArmsInput, opts: ComputeOptions = {}): Metr
     power_blockers: powerBlockers,
     caveats,
     cost_per_100_recovered_paise: Math.round(costPer100),
+    razorpay_fee: {
+      on_incremental_paise: mdrOnRecoveredPaise(Math.max(0, incremental)),
+      on_gross_recovered_paise: mdrOnRecoveredPaise(grossRecovered),
+      effective_rate: MDR_EFFECTIVE_RATE,
+      note: RAZORPAY_MDR.source,
+    },
     false_nudge_rate: falseNudgeRate,
     contact_budget: { used: messagesSent, cap },
     cost_breakdown_paise: opts.costBreakdownPaise ?? {},

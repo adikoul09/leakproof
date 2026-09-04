@@ -475,6 +475,34 @@ monitoring cannot ignore it), `GET /api/ledger/export.csv` (streamed, includes
 both hashes so the export verifies independently of this app). `ledger.verify`
 also runs hourly as a cron.
 
+### What recovery costs
+
+**₹0.00 per ₹100 recovered**, and that is an architectural result rather than a
+number rounded down.
+
+Delivery on every rail is Razorpay's own notification on the payment link —
+`notify: {sms, email}` — which is bundled with the link. There is no SMS
+gateway under contract, no email provider, and Gemini's free tier covers the
+composer at this volume. There is genuinely nothing billed per attempt. If a
+provider is ever added these stop being zero the same day, and each rate in
+`src/core/cost/meter.ts` carries the source line saying why it is what it is.
+
+**Razorpay's transaction fee is reported separately and never folded in.**
+2% + 18% GST on the fee = **2.36% of captured amount**.
+
+That separation is deliberate. A per-message cost is incurred on every
+*attempt*, including the ones that recover nothing — it is the price of trying.
+MDR is charged only on *capture*, so it scales with success. Summed into one
+figure, spending more on failed attempts and recovering more money would push
+the same number in the same direction, and "cost per ₹100 recovered" would stop
+meaning anything. It is also not a cost this system causes: the merchant pays
+MDR on any captured payment. This is the fee on money that would otherwise have
+been lost entirely.
+
+`human_escalation` remains a genuine placeholder (≈10 minutes of a collections
+agent) and is still flagged as one on screen — zeroing messaging must not
+quietly zero the honesty of the rest of the table.
+
 ### The Control Tower
 
 `/tower` — a dense operations console, not a landing page. Dark, tabular,

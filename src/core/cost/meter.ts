@@ -20,24 +20,32 @@ export const RATES = {
     paise: 0,
     source: 'Razorpay charges MDR on capture, not per link created',
   },
-  /** WhatsApp Cloud API business-initiated utility conversation, India. */
+  /**
+   * Delivery is Razorpay's own notification on the payment link — `notify:
+   * {sms, email}` — which is bundled with the link and carries no separate
+   * per-message charge. This system never contracts an SMS gateway or an email
+   * provider, so there is genuinely nothing to bill per message.
+   *
+   * That is a real architectural consequence, not a rounding-down: the rails
+   * were built on Razorpay's notification precisely so no separate provider was
+   * needed. If a provider is ever added, these stop being zero the same day.
+   */
   whatsapp_utility_message: {
-    paise: 14,
-    source: '🔸 PLACEHOLDER — replace with Meta published utility rate for IN',
+    paise: 0,
+    source: 'not sent — the WhatsApp rail degrades to SMS on Razorpay notification (FAILURES #25)',
   },
-  /** Transactional email. */
   email_message: {
-    paise: 4,
-    source: '🔸 PLACEHOLDER — replace with Resend published per-email pricing',
+    paise: 0,
+    source: 'bundled with the Razorpay payment link notification; no separate email provider',
   },
   sms_message: {
-    paise: 20,
-    source: '🔸 PLACEHOLDER — replace with the chosen SMS gateway rate',
+    paise: 0,
+    source: 'bundled with the Razorpay payment link notification; no separate SMS gateway',
   },
   /** One composeMessage() call on gemini-2.5-flash, ~600 in / ~120 out. */
   llm_compose: {
-    paise: 2,
-    source: '🔸 PLACEHOLDER — replace with Gemini published per-token pricing',
+    paise: 0,
+    source: 'Gemini free tier at this volume; the composer is not live yet in any case',
   },
   /** A human picking up an escalation. Fully loaded minutes, not wages. */
   human_escalation: {
@@ -53,3 +61,40 @@ export const costOf = (item: CostItem): number => RATES[item].paise;
 /** Every placeholder still in the table — surfaced in /settings, not hidden. */
 export const unpricedItems = (): CostItem[] =>
   (Object.keys(RATES) as CostItem[]).filter((k) => RATES[k].source.includes('PLACEHOLDER'));
+
+// ── Razorpay's transaction fee ───────────────────────────────────────
+
+/**
+ * Razorpay's standard domestic MDR, plus GST on the fee.
+ *
+ * ⚠️ This is a DIFFERENT KIND OF COST from everything above and is deliberately
+ * not summed into the same total.
+ *
+ * A per-message cost is incurred on every *attempt*, including the ones that
+ * recover nothing — it is the price of trying. MDR is charged only when a
+ * payment is actually captured, so it is a cost on *success*, and it scales
+ * with recovered revenue rather than with effort.
+ *
+ * Adding them together would produce a number where spending more on failed
+ * attempts and recovering more money move the same figure in the same
+ * direction, which makes "cost per ₹100 recovered" mean nothing. It is reported
+ * as a separate footnote, and the README says why.
+ *
+ * It is also not a cost LEAKPROOF causes: the merchant pays MDR on any captured
+ * payment, recovered or not. It is the fee on money that would otherwise have
+ * been lost entirely.
+ */
+export const RAZORPAY_MDR = {
+  /** Standard domestic rate on cards, netbanking, UPI above the free threshold. */
+  rate: 0.02,
+  /** GST is charged on the fee, not on the transaction. */
+  gstOnFee: 0.18,
+  source: '🔸 Razorpay standard domestic pricing, 2% + 18% GST on the fee. Negotiated rates differ by merchant.',
+} as const;
+
+/** Effective take on a captured rupee: 2% × 1.18 = 2.36%. */
+export const MDR_EFFECTIVE_RATE = RAZORPAY_MDR.rate * (1 + RAZORPAY_MDR.gstOnFee);
+
+/** What Razorpay takes on an amount actually captured. */
+export const mdrOnRecoveredPaise = (recoveredPaise: number): number =>
+  Math.round(recoveredPaise * MDR_EFFECTIVE_RATE);

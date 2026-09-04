@@ -14,8 +14,9 @@
  * are rendered differently and labelled, because a confident rupee figure with
  * no such marking is the most persuasive way to be wrong here.
  */
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { Badge, Panel, istDateTime, rupees } from '@/components/primitives';
+import { Badge, ConsoleNav, Panel, istDateTime, rupees } from '@/components/primitives';
 
 interface Counts {
   events: number;
@@ -207,14 +208,26 @@ export function ReplayClient() {
   const result = envelope?.result ?? null;
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-[1600px] flex-col gap-2 p-3">
-      <header className="flex flex-wrap items-center gap-3">
-        <a href="/tower" className="text-[17px] font-semibold tracking-tight" style={{ color: 'var(--accent)' }}>
-          ▣ LEAKPROOF
-        </a>
-        <span className="label" style={{ letterSpacing: '0.08em' }}>
-          Replay &amp; what-if
-        </span>
+    <div className="stagger-shell mx-auto flex min-h-screen max-w-[1600px] flex-col gap-2 p-3">
+      <header
+        className="flex flex-wrap items-center gap-3 rounded-[10px] px-3 py-2"
+        style={{
+          background: 'var(--glass)',
+          border: '1px solid var(--border-subtle)',
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+        }}
+      >
+        <Link
+          href="/"
+          className="group flex items-center gap-2 text-[17px] font-semibold tracking-tight"
+          style={{ color: 'var(--accent)' }}
+          title="Back to the entry screen"
+        >
+          <span className="inline-block transition-transform duration-500 group-hover:rotate-90">▣</span>
+          LEAKPROOF
+        </Link>
+        <ConsoleNav active="replay" />
         {/*
           Blueprint's demo-critical detail: when the screen shows replayed
           rather than live data it must be unmistakable. The panel should never
@@ -233,9 +246,7 @@ export function ReplayClient() {
             {envelope?.run.events_count?.toLocaleString('en-IN')} historical events · not live data
           </span>
         )}
-        <a href="/tower" className="ml-auto text-[12.5px]" style={{ color: 'var(--text-secondary)' }}>
-          ← Control tower
-        </a>
+
       </header>
 
       <div className="grid grid-cols-1 gap-2 xl:grid-cols-[360px_1fr]">

@@ -70,7 +70,7 @@ export function QueueFilterTabs({
             role="tab"
             aria-selected={on}
             onClick={() => onChange(f.key)}
-            className="cursor-pointer rounded-sm px-2 py-1 text-[12px] transition-colors"
+            className="press cursor-pointer rounded-sm px-2 py-1 text-[12px] transition-all duration-200"
             style={{
               color: on ? 'var(--accent)' : 'var(--text-secondary)',
               background: on ? 'var(--accent-dim)' : 'transparent',
@@ -183,10 +183,14 @@ export function AtRiskQueueTable({
                       onSelect(r.id);
                     }
                   }}
-                  className={`cursor-pointer ${newIds.has(r.id) ? 'row-new' : ''}`}
+                  className={`group cursor-pointer transition-colors duration-150 hover:bg-[var(--bg-surface-2)] ${newIds.has(r.id) ? 'row-new' : ''}`}
                   style={{
                     borderBottom: '1px solid var(--border-subtle)',
+                    // The accent rail animates in rather than snapping, so the
+                    // selected row and the drawer that opens for it feel like
+                    // one gesture instead of two events.
                     borderLeft: `2px solid ${selected ? 'var(--accent)' : 'transparent'}`,
+                    transition: 'border-left-color 220ms var(--ease-out-expo), background-color 150ms ease',
                     background: selected ? 'var(--bg-hover)' : undefined,
                   }}
                   aria-label={`${rupees(r.amount_paise)} ${r.issuer ?? ''} ${r.failure_class ?? ''}`}
@@ -219,7 +223,9 @@ export function AtRiskQueueTable({
                     {na.text}
                   </td>
                   <td className={TD} style={{ color: 'var(--text-muted)' }} aria-hidden>
-                    ▸
+                    <span className="inline-block transition-transform duration-200 ease-out group-hover:translate-x-1 group-hover:text-[var(--accent)]">
+                      ▸
+                    </span>
                   </td>
                 </tr>
               );
@@ -244,7 +250,7 @@ export function AtRiskQueueTable({
           <button
             onClick={onLoadMore}
             disabled={loading}
-            className="cursor-pointer rounded-sm px-2.5 py-1 text-[12px] disabled:cursor-not-allowed disabled:opacity-40"
+            className="press lift cursor-pointer rounded-sm px-2.5 py-1 text-[12px] disabled:cursor-not-allowed disabled:opacity-40"
             style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
           >
             {loading ? 'Loading…' : 'Load more'}

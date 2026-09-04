@@ -30,7 +30,15 @@ import { appendLedgerSafe } from '@/core/ledger/append';
 import { env } from '@/lib/env';
 import { inngest } from '@/lib/inngest';
 
-const MERCHANT_NAME = 'Kirana Cloud';
+/**
+ * The demo merchant. Appears in every customer-facing message, so it is defined
+ * once here rather than being typed into each template.
+ */
+const MERCHANT_NAME = process.env.MERCHANT_NAME || 'Kiraana Fresh';
+const MERCHANT_DESCRIPTOR = process.env.MERCHANT_DESCRIPTOR || 'online grocery, Bengaluru';
+
+const rupeeLabel = (paise: number) =>
+  `₹${(paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 /**
  * A business-initiated WhatsApp conversation must use a pre-approved template;
  * Meta rejects free text with error 131047. This name has to exist and be
@@ -200,7 +208,12 @@ export const recoveryExecute = inngest.createFunction(
         return await createPaymentLink({
           amountPaise: snapshot.pe.amountPaise,
           currency: snapshot.pe.currency,
-          description: `Retry for ${snapshot.pe.id}`,
+          /**
+           * This is what the customer reads on the Razorpay payment page, so
+           * it says who is asking and for what. `Retry for pay_Sc29ew00000n9d`
+           * is an internal id shown to a stranger being asked for money.
+           */
+          description: `${MERCHANT_NAME} (${MERCHANT_DESCRIPTOR}) — ${rupeeLabel(snapshot.pe.amountPaise)} payment`,
           // Razorpay notifies the customer directly, which is what makes this
           // rail end to end without a separate email or WhatsApp provider.
           notify: { sms: channel === 'sms', email: channel === 'email' },

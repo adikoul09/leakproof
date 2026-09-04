@@ -1,6 +1,7 @@
 'use client';
 
 import { Badge, Panel, rupees } from '@/components/primitives';
+import { CountUp, useChangePulse } from '@/components/motion';
 
 export interface MetricsSummary {
   arms: Record<
@@ -26,6 +27,12 @@ export interface MetricsSummary {
   power_blockers: string[];
   caveats: string[];
   cost_per_100_recovered_paise: number;
+  razorpay_fee: {
+    on_incremental_paise: number;
+    on_gross_recovered_paise: number;
+    effective_rate: number;
+    note: string;
+  };
   false_nudge_rate: number;
   contact_budget: { used: number; cap: number };
   cost_breakdown_paise: Record<string, number>;
@@ -34,19 +41,34 @@ export interface MetricsSummary {
   unpriced_cost_items: string[];
 }
 
+/**
+ * One KPI.
+ *
+ * `numeric`/`format` opt the tile into a counted transition instead of a hard
+ * swap. That is not decoration on a 5-second poll: a figure that jumps from
+ * ₹4.2L to ₹4.8L between blinks is easy to miss entirely, and the tile also
+ * flashes its own background once when the value underneath it changes. Tiles
+ * whose value is not a number (an em-dash, a percentage with a sign) pass
+ * `value` and get the flash without the count.
+ */
 function Tile({
   label,
   value,
+  numeric,
+  format,
   sub,
   tone = 'default',
   title,
 }: {
   label: string;
   value: string;
+  numeric?: number;
+  format?: (n: number) => string;
   sub?: React.ReactNode;
   tone?: 'default' | 'muted' | 'warn' | 'accent';
   title?: string;
 }) {
+  const pulse = useChangePulse(numeric ?? value);
   const colour =
     tone === 'muted'
       ? 'var(--text-muted)'
@@ -57,13 +79,19 @@ function Tile({
           : 'var(--text-primary)';
   return (
     <div
-      className="flex min-w-0 flex-1 flex-col justify-between gap-1 px-4 py-3"
+      className={`group relative flex min-w-0 flex-1 flex-col justify-between gap-1 px-4 py-3 transition-colors duration-300 hover:bg-[var(--bg-surface-2)] ${pulse}`}
       title={title}
       style={{ borderRight: '1px solid var(--border-subtle)' }}
     >
-      <div className="label">{label}</div>
+      <div className="label transition-colors duration-300 group-hover:text-[var(--text-secondary)]">
+        {label}
+      </div>
       <div className="tnum truncate text-[26px] leading-8 font-semibold" style={{ color: colour }}>
-        {value}
+        {numeric !== undefined && format ? (
+          <CountUp value={numeric} format={format} />
+        ) : (
+          value
+        )}
       </div>
       <div className="text-[12px] leading-4" style={{ color: 'var(--text-muted)' }}>
         {sub}
@@ -98,6 +126,7 @@ export function KpiStrip({
 
   const lp = metrics.arms.leakproof;
   const ctrl = metrics.arms.control;
+  const grossPaise = Object.values(metrics.arms).reduce((a, x) => a + x.gross_paise, 0);
 
   return (
     <div
@@ -112,16 +141,17 @@ export function KpiStrip({
       <Tile
         label="At risk now"
         value={rupees(atRisk.paise, { compact: true })}
+        numeric={atRisk.paise}
+        format={(n) => rupees(n, { compact: true })}
         sub={`${atRisk.events.toLocaleString('en-IN')} open events`}
         tone="warn"
         title={rupees(atRisk.paise)}
       />
       <Tile
         label="Gross recovered"
-        value={rupees(
-          Object.values(metrics.arms).reduce((a, x) => a + x.gross_paise, 0),
-          { compact: true },
-        )}
+        value={rupees(grossPaise, { compact: true })}
+        numeric={grossPaise}
+        format={(n) => rupees(n, { compact: true })}
         sub={`${Object.values(metrics.arms).reduce((a, x) => a + x.recovered, 0)} events, all arms`}
       />
       {/*
@@ -132,6 +162,8 @@ export function KpiStrip({
       <Tile
         label="Incremental"
         value={metrics.powered ? rupees(metrics.incremental_paise, { compact: true }) : '——'}
+        numeric={metrics.powered ? metrics.incremental_paise : undefined}
+        format={(n) => rupees(n, { compact: true })}
         tone={metrics.powered ? 'accent' : 'muted'}
         title={
           metrics.powered
@@ -164,22 +196,23 @@ export function KpiStrip({
           </span>
         }
       />
+      {/*
+        Zero is the honest answer, not a missing number: delivery is Razorpay's
+        own notification on the payment link, so there is no per-message charge
+        to bill. The sub-line says so, because a bare ₹0.00 reads as a bug.
+      */}
       <Tile
         label="Cost per ₹100"
-        value={
-          metrics.cost_per_100_recovered_paise > 0
-            ? `₹${(metrics.cost_per_100_recovered_paise / 100).toFixed(2)}`
-            : '—'
+        value={`₹${(metrics.cost_per_100_recovered_paise / 100).toFixed(2)}`}
+        title={
+          'Delivery is bundled with the Razorpay payment link — no SMS gateway, no email provider, no LLM spend at this volume. ' +
+          `Razorpay's fee on recovered money is reported separately: ${(metrics.razorpay_fee.effective_rate * 100).toFixed(2)}% of capture.`
         }
         sub={
-          metrics.unpriced_cost_items.length > 0 ? (
-            <span title={`unpriced: ${metrics.unpriced_cost_items.join(', ')}`}>
-              {metrics.unpriced_cost_items.length} rate
-              {metrics.unpriced_cost_items.length === 1 ? '' : 's'} still placeholder
-            </span>
-          ) : (
-            'of incremental revenue'
-          )
+          <span>
+            messaging bundled · Razorpay fee{' '}
+            {(metrics.razorpay_fee.effective_rate * 100).toFixed(2)}% on capture
+          </span>
         }
       />
     </div>
@@ -197,30 +230,50 @@ export interface LiveOutage {
   last_seen: string;
   peak_confidence: number;
   downtime_api_agrees: boolean | null;
+  downtime_api_why?: string | null;
+  open?: boolean;
 }
 
 export function OutageBanner({ outages }: { outages: LiveOutage[] }) {
   if (outages.length === 0) return null;
+
+  /**
+   * Biggest first, and only the top few get a banner.
+   *
+   * The detector's false positives are real and belong on the screen, but they
+   * are single-event blips — giving each one the same full-width red bar as a
+   * 36-event outage that parked ₹1.5 lakh buries the incident that matters
+   * under the noise it also found. The rest are counted on one line, so nothing
+   * is hidden.
+   */
+  const ranked = [...outages].sort((a, b) => b.events - a.events || b.paise_parked - a.paise_parked);
+  const open = ranked.filter((o) => o.open !== false);
+  const shown = ranked.slice(0, Math.max(open.length, 2));
+  const rest = ranked.slice(shown.length);
+
   return (
     <div className="flex flex-col gap-1.5">
-      {outages.map((o) => (
+      {shown.map((o) => (
         <div
           key={o.cohort}
           role="status"
           className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-[10px] px-3 py-2"
           style={{
-            background: 'rgba(240,85,79,0.09)',
-            border: '1px solid rgba(240,85,79,0.35)',
+            // A resolved incident still belongs on the screen — a batch replays
+            // a day in minutes — but it must not look like it is happening now.
+            background: o.open === false ? 'rgba(100,120,154,0.09)' : 'rgba(240,85,79,0.09)',
+            border: `1px solid ${o.open === false ? 'var(--border-subtle)' : 'rgba(240,85,79,0.35)'}`,
           }}
         >
           <span className="flex items-center gap-2">
             <span
-              className="pulse-danger inline-block h-2 w-2 rounded-full"
-              style={{ background: 'var(--danger)' }}
+              className={`inline-block h-2 w-2 rounded-full ${o.open === false ? '' : 'pulse-danger'}`}
+              style={{ background: o.open === false ? 'var(--text-muted)' : 'var(--danger)' }}
               aria-hidden
             />
-            <strong style={{ color: 'var(--danger)' }}>
-              OUTAGE · {o.issuer ?? 'unknown'} / {o.method ?? 'unknown'}
+            <strong style={{ color: o.open === false ? 'var(--text-secondary)' : 'var(--danger)' }}>
+              {o.open === false ? 'RESOLVED' : 'OUTAGE'} · {o.issuer ?? 'unknown'} /{' '}
+              {o.method ?? 'unknown'}
             </strong>
           </span>
           <span className="tnum" style={{ color: 'var(--text-secondary)' }}>
@@ -240,17 +293,34 @@ export function OutageBanner({ outages }: { outages: LiveOutage[] }) {
           */}
           <span className="ml-auto">
             {o.downtime_api_agrees === true ? (
-              <Badge tone="ok">Downtime API agrees</Badge>
+              <Badge tone="ok" title={o.downtime_api_why ?? undefined}>
+                Downtime API agrees
+              </Badge>
             ) : o.downtime_api_agrees === false ? (
-              <Badge tone="warn">Downtime API disagrees</Badge>
+              <Badge tone="warn" title={o.downtime_api_why ?? undefined}>
+                Downtime API disagrees
+              </Badge>
             ) : (
-              <Badge tone="muted" title="Recorded as corroboration only, never an input">
+              <Badge
+                tone="muted"
+                title={o.downtime_api_why ?? 'Recorded as corroboration only, never an input'}
+              >
                 Downtime API — no signal
               </Badge>
             )}
           </span>
         </div>
       ))}
+      {rest.length > 0 && (
+        <p className="px-1 text-[11.5px]" style={{ color: 'var(--text-muted)' }}>
+          + {rest.length} smaller cohort{rest.length === 1 ? '' : 's'} also flagged (
+          {rest.reduce((a, o) => a + o.events, 0)} event
+          {rest.reduce((a, o) => a + o.events, 0) === 1 ? '' : 's'} total) —{' '}
+          <a href="/api/outages" style={{ color: 'var(--accent)' }}>
+            all windows
+          </a>
+        </p>
+      )}
     </div>
   );
 }
