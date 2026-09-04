@@ -5,7 +5,7 @@
  * so this is the Postgres implementation behind the same interface — swapping
  * in Redis later is a one-file change and no caller moves.
  */
-import { and, eq, gte, sql as raw } from 'drizzle-orm';
+import { and, eq, gte, lte, sql as raw } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { cohortBaselines, cohortCounters } from '@/db/schema';
 import { TRIAGE, bucketStart } from './config';
@@ -54,14 +54,31 @@ export const postgresCohortStore: CohortStore = {
 
   async window(cohortDim, at) {
     // The rolling window is [at - windowMinutes, at], snapped to bucket edges.
-    const from = new Date(bucketStart(at).getTime() - (TRIAGE.windowMinutes - TRIAGE.bucketMinutes) * 60_000);
+    //
+    // The upper bound is load-bearing and was missing. Without it the query
+    // sums every bucket from `from` FORWARD, including buckets later than the
+    // event — which is invisible on live webhook traffic, because the future
+    // has not happened yet, and catastrophic on anything backfilled. A
+    // generated batch ingests 24 hours of events in eight minutes, so by the
+    // time triage reached an event from hour 3 the counters already held hours
+    // 4 to 24: a "15-minute window" was returning n=3,387 at the whole day's
+    // average decline rate. The n>=8 guard became meaningless and a real spike
+    // was diluted into the daily mean. FAILURES.md #20.
+    const end = bucketStart(at);
+    const from = new Date(end.getTime() - (TRIAGE.windowMinutes - TRIAGE.bucketMinutes) * 60_000);
     const rows = await db
       .select({
         nTotal: raw<number>`coalesce(sum(${cohortCounters.nTotal}), 0)::int`,
         nFailed: raw<number>`coalesce(sum(${cohortCounters.nFailed}), 0)::int`,
       })
       .from(cohortCounters)
-      .where(and(eq(cohortCounters.cohortDim, cohortDim), gte(cohortCounters.bucketStart, from)));
+      .where(
+        and(
+          eq(cohortCounters.cohortDim, cohortDim),
+          gte(cohortCounters.bucketStart, from),
+          lte(cohortCounters.bucketStart, end),
+        ),
+      );
 
     const nTotal = rows[0]?.nTotal ?? 0;
     const nFailed = rows[0]?.nFailed ?? 0;

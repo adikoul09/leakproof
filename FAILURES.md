@@ -849,6 +849,106 @@ field (#10).
 
 ---
 
+## 20. The 15-minute cohort window had no upper bound, and was reading the future
+
+**When:** Milestone 8, on the first replay run. Found by the replay engine, not
+by a test.
+
+The replay reported 42 systemic classifications against the 35 history had
+recorded — under the *same* policy and the *same* thresholds. Nothing about the
+what-if should have moved that number, so something was wrong with one of the
+two runs.
+
+The rolling window is defined as "the last 15 minutes of this cohort's counter
+buckets". The query implementing it:
+
+```ts
+const from = new Date(bucketStart(at).getTime() - (windowMinutes - bucketMinutes) * 60_000);
+...
+.where(and(eq(cohortCounters.cohortDim, cohortDim), gte(cohortCounters.bucketStart, from)));
+```
+
+**A lower bound and no upper bound.** It sums every bucket from `from`
+*forward*, for ever.
+
+On live webhook traffic this is invisible, because the future has not happened
+yet — there are no buckets after `now` to sum. It only bites on anything
+backfilled, and the generator backfills by construction: a demo batch pushes 24
+hours of events through the pipeline in eight minutes. By the time triage
+reached an event stamped 03:00, the counters already held 04:00 through midnight.
+
+So a "15-minute window" was returning this:
+
+```
+cohort_key            cohort_n   decline_rate
+SBI|upi|<500|230        3,387       0.0803
+```
+
+**n = 3,387 for fifteen minutes, at exactly the whole day's average decline
+rate.** Two consequences, both quiet:
+
+- The `cohort_n >= 8` guard stopped meaning anything. Every cohort trivially
+  cleared a threshold designed to suppress small-sample noise.
+- A real spike was averaged into the daily mean and **suppressed**. An outage
+  running at 62% for 45 minutes, diluted across a day at 8%, never clears the
+  0.35 floor.
+
+The injected outage was still detected, and that is the uncomfortable part. It
+sits at the *end* of the corpus, so for those events "everything from here
+forward" happens to be almost entirely outage buckets — the window was
+accidentally right precisely where it was being measured. Detection scored 91%
+precision on the demo batch **for the wrong reason**, and an outage placed in
+the middle of the window would have been missed silently.
+
+**Fix:** bound both ends, in the Postgres store and the in-memory one.
+`cohort-window.test.ts` locks it down with four assertions, including one that a
+spike stays a spike instead of being diluted by the rest of the day.
+
+The tuner was unaffected and its numbers did not move by a single event —
+`npm run tune:triage` replays in timestamp order and observes as it goes, so the
+future buckets never existed to be read. That is the accidental benefit of
+building the tuning harness as a replay: it was already doing the honest thing,
+and its agreement before and after the fix is the evidence the fix is right.
+
+**What found it.** Not a test — every test asserted the window code does what
+the window code does. It was the replay engine disagreeing with history about a
+number neither of them should have been able to change. Building the second
+consumer of a function is what exposed it, which is the fifth time on this
+project the dangerous bug returned a plausible wrong answer instead of an error.
+
+---
+
+## 21. Replay compared "messages authorised" against "messages actually sent"
+
+**When:** Milestone 8, same run.
+
+The first replay reported a delta of **+1,624 contacts and +₹233 of spend**
+against a policy that had not changed. The screen would have shown a dramatic
+policy effect that was pure artefact.
+
+The baseline counted contacts from `messages` rows — what had physically been
+sent. The replay counted them from the *gate verdict* — what the policy
+authorises. Those are different quantities, and 4 September 2026 is Janmashtami:
+the gate had correctly deferred all 1,494 attempts to the next working day, so
+nothing had been sent at all. Baseline zero, replay 1,624, and the difference
+was entirely "tomorrow has not happened yet".
+
+**Fix:** derive both sides from the decision, priced through the same
+`railCost`. And a second problem the fix exposed — 258 of the 3,000 events had
+no recorded gate verdict at all, because triage was still draining. Replay
+evaluates those; history has nothing to compare them to. They are now excluded
+from every delta and reported as `events_without_baseline_decision`, so a
+partially-drained corpus cannot masquerade as a policy effect either.
+
+A third confound survives and is surfaced as a caveat rather than fixed: the
+stored classifications were produced by whatever code was live when each event
+was ingested. After #20, replaying the same corpus under the same policy shows
++33 systemic — which is measuring the *window fix*, not the policy. The engine
+now detects a swing of that size and says so, because a what-if screen that
+silently attributes a code change to a policy change is worse than no screen.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

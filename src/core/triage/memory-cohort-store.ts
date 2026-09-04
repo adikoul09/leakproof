@@ -91,7 +91,11 @@ export class MemoryCohortStore implements CohortStore {
     let nFailed = 0;
     if (dim) {
       for (const [k, b] of dim) {
-        if (k >= from) {
+        // Both bounds. Replay hydrates every bucket up front, so without the
+        // upper bound the classifier would see cohort data from after the event
+        // it is classifying — lookahead bias, and a replay that cannot be
+        // trusted. FAILURES.md #20.
+        if (k >= from && k <= end) {
           nTotal += b.nTotal;
           nFailed += b.nFailed;
         }
@@ -147,6 +151,27 @@ export class MemoryCohortStore implements CohortStore {
       }
     }
     return out.sort((x, y) => x.bucket - y.bucket);
+  }
+
+  /**
+   * Load a counter bucket wholesale, rather than one observation at a time.
+   *
+   * `payment_events` holds only failures — the successes that form the cohort
+   * *denominator* survive solely as aggregates in `cohort_counters`. Replay
+   * therefore cannot reconstruct the denominator by walking the corpus; it has
+   * to hydrate from those aggregates, which is also the only way the replayed
+   * decline rate is the same number the live classifier saw.
+   */
+  seedBucket(cohortDim: string, bucketStartMs: number, nTotal: number, nFailed: number): void {
+    let dim = this.buckets.get(cohortDim);
+    if (!dim) {
+      dim = new Map();
+      this.buckets.set(cohortDim, dim);
+    }
+    const b = dim.get(bucketStartMs) ?? { nTotal: 0, nFailed: 0 };
+    b.nTotal += nTotal;
+    b.nFailed += nFailed;
+    dim.set(bucketStartMs, b);
   }
 
   /** Total observations, for assertions in tests. */

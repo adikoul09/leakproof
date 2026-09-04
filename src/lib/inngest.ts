@@ -30,6 +30,10 @@ type Events = {
   'simulator.generate': {
     data: { batchId: string };
   };
+  /** A what-if has been requested against a historical corpus. */
+  'replay.run': {
+    data: { runId: string };
+  };
 };
 
 export const inngest = new Inngest({

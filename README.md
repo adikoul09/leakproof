@@ -24,8 +24,8 @@ Razorpay Buildathon, Track 03.
 | 4 | Control group + incrementality maths | ✅ validated against a planted effect |
 | 5 | Hash-chained audit ledger | ✅ every decision writes a receipt |
 | 6 | Synthetic data generator | ✅ seeded, documented, and used to tune the detector |
-| 7 | Control Tower dashboard | ⬜ |
-| 8 | Replay / what-if engine | ⬜ |
+| 7 | Control Tower dashboard | ✅ queue, KPI strip, decision trace drawer |
+| 8 | Replay / what-if engine | ✅ decisions replayed, outcomes modelled and labelled |
 
 ---
 
@@ -434,6 +434,97 @@ monitoring cannot ignore it), `GET /api/ledger/export.csv` (streamed, includes
 both hashes so the export verifies independently of this app). `ledger.verify`
 also runs hourly as a cron.
 
+### The Control Tower
+
+`/tower` — a dense operations console, not a landing page. Dark, tabular,
+everything on one screen. It reads from the real pipeline: the queue is
+`payment_events` joined to its classification, arm and latest attempt; the KPI
+strip is the same `metricsSummary` the judged API returns; the outage banner is
+derived from systemic classifications. Nothing is mocked.
+
+```
+GET /api/events?filter=&limit=&cursor=   at-risk queue, keyset paginated
+GET /api/events/:id/trace                the seven decision-trace cards
+GET /api/status                          breaker, live outages, at-risk, mix
+GET /api/stream                          SSE — the blueprint's choice over WebSockets
+```
+
+Keyset pagination rather than `OFFSET`, because the queue is live-appending and
+an offset silently skips or repeats rows as new events land above the cursor —
+on this screen that looks like events vanishing.
+
+**Two things the screen refuses to do.**
+
+It will not show an unsupported number confidently. The incremental tile renders
+grey and labelled `UNDERPOWERED` when the experiment cannot carry the claim, and
+the rail prints the power blockers and caveats *beside* the number rather than
+in a methodology note. On a partially-drained batch that currently includes
+"mean ticket size differs by 52.2% across arms; the randomisation may not be
+clean and the headline number should be treated with suspicion" — the estimator
+criticising its own output, on the screen where the output is shown.
+
+It will not conflate *no signal* with *disagreed*. The Payment Downtime API
+badge has three states, because a cohort Razorpay has no downtime data for is a
+different fact from one Razorpay says is healthy.
+
+**The Decision Trace drawer** (`/tower?event=<id>`) is one click from any row and
+is the screen that has to survive scrutiny. Seven cards, each showing the raw
+input and the rule output that acted on it: the Razorpay error payload in mono,
+the classification with the cohort numbers it was tested against, the arm with
+the reproducible hash input, every policy rule with **the values actually
+compared** (`contact_window 08:00–19:00 · now 17:05 IST · PASS`), the rail choice
+and its alternatives, the message with its prompt hash and token cost, and the
+ledger records that receipt the whole thing. `Esc` closes it, the URL is
+shareable, and `Copy trace as JSON` hands over everything the drawer rendered.
+
+The banner derives live incidents from classifications rather than reading
+`outage_windows`, which is written by an `outage.detect` cron that is not in the
+first eight milestones. Same signal, computed instead of cached; when the cron
+lands the response shape does not change.
+
+### Replay and what-if
+
+`/replay` — re-runs a historical corpus through the **same pure functions** the
+live pipeline uses (`classify`, `evaluatePolicy`, `chooseRail`) under a
+different policy, different detector thresholds, or different flags, and reports
+what would have changed. Roughly 50,000 events/second; the wait is loading the
+corpus, not replaying it.
+
+It calls the production code paths rather than a parallel implementation. That
+is the entire reason those functions take every input as an argument and read
+neither the clock nor the database — a what-if computed by a second
+implementation is a number about the second implementation.
+
+**Replay replays decisions, not outcomes.** If a tighter policy would have
+blocked a contact that was in fact sent, replay knows that with certainty: the
+gate is deterministic given its inputs. Whether the customer would *still have
+paid* is a counterfactual no corpus can answer. So the result keeps two kinds of
+number apart, and the screen renders them differently:
+
+| | |
+|---|---|
+| **Measured** | decision changes, contacts, messages, spend. These follow from the decision alone and are exact. |
+| **Modelled** | revenue. Requires an assumption about customer behaviour, which is written into the payload and printed next to the figure. |
+
+A replay screen reporting a confident rupee delta without saying which of the
+two it is doing is the most persuasive way to be wrong in this whole project.
+
+Running it also exposed two bugs worth reading about, both in
+[FAILURES.md](FAILURES.md):
+
+- **#20 — the 15-minute cohort window had no upper bound.** It summed every
+  counter bucket from the window start *forward*, for ever. Invisible on live
+  traffic, because the future has not happened yet; severe on anything
+  backfilled. A generated batch pushes a day of events through in eight minutes,
+  so a "15-minute window" was returning `n=3,387` at the whole day's average
+  decline rate — the `n ≥ 8` guard stopped meaning anything, and a real spike was
+  diluted into the daily mean. The replay engine found it by disagreeing with
+  history about a number neither should have been able to move.
+- **#21 — replay compared authorised contacts against sent ones.** On a day when
+  the gate had correctly deferred everything to the next working day, that read
+  as a +1,624-contact policy effect. Both sides now derive from the decision, and
+  events with no recorded verdict are excluded and counted.
+
 ### The synthetic data generator
 
 Every number LEAKPROOF reports about itself was computed over a corpus this
@@ -677,6 +768,11 @@ Stated up front rather than discovered by a judge. Full detail in
   on a synthetic batch also arrives as *organic*, so the attributed/organic
   split reads 0% — the incrementality maths is unaffected, since it measures
   rupees rather than attribution.
+- **Detection numbers recorded before the cohort-window fix are understated.**
+  Classifications already in the database were produced by the unbounded-window
+  code (FAILURES.md #20) and are not re-run automatically. The replay engine
+  detects a large classification swing and says explicitly that it may be
+  measuring a code change rather than the policy under test.
 - **A recovery is recorded by timestamp, not by label.** Every metric keys off
   `recovered_at`, never `state = 'recovered'`. `state` is written by four
   different jobs and a recovery landing mid-pipeline used to have its label
