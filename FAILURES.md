@@ -1025,6 +1025,60 @@ wrong reason and teaches everyone to edit tests when they retune.
 
 ---
 
+## 23. The WhatsApp rail created a payment link and told nobody about it
+
+**When:** Milestone 8, doing an honest pre-pitch audit of what is actually wired.
+
+Delivery in this system is Razorpay's own notification on the payment link:
+
+```ts
+notify: { sms: channel === 'sms', email: channel === 'email' }
+```
+
+That is what makes the recovery rail end to end without provisioning a separate
+email or WhatsApp provider, and it is a good trade. But **Razorpay has no
+WhatsApp notification**, and `WHATSAPP_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` were
+never configured — there is no Meta Cloud API client in the codebase at all.
+
+So for `rail = whatsapp_nudge`, `channel` is `'whatsapp'`, and both flags
+evaluate false. The link gets created. Nobody is notified. And the code then:
+
+- marks the event `action_sent`,
+- writes a `messages` row with the WhatsApp template body and `sent_at` set,
+- bills `whatsapp_utility_message` into cost-per-₹100-recovered.
+
+**312 of the 1,672 attempts on the demo corpus — 19% — routed to that rail.**
+The dashboard would have reported nearly a fifth of its actions as sent when
+nothing had left the building, and charged for them.
+
+Nothing errored, which is the pattern this project keeps running into. It is
+also the worst version of it so far: the previous silent-wrong-answer bugs
+corrupted a *number*, and this one corrupts the thing the number is about. An
+uncontacted customer counted as contacted does not just mis-measure recovery, it
+quietly converts a treatment event into an untreated one — and since the
+incrementality result rests on treated arms actually being treated, it would
+have biased the headline toward zero while every screen said the send succeeded.
+
+It has not corrupted any result yet only by accident: 4 September is a bank
+holiday, the gate correctly deferred all 1,672 attempts to the next working day,
+and **not one of them has executed**. The bug was found before it could fire.
+
+**Fix:** `effectiveChannel(rail, whatsappConfigured)`. Until a WhatsApp provider
+exists, a WhatsApp rail degrades to SMS — the same phone number, a channel that
+actually delivers — and is recorded as `sms` so the cost meter and the Decision
+Trace both say what really happened. The downgrade is a decision about who the
+customer hears from, so it writes a `channel_degraded` ledger record rather than
+a log line.
+
+`channel.test.ts` asserts the fallback, that no other rail is touched, and that
+**no rail can resolve to a channel with no delivery path** — which is the
+general form of the bug and the assertion that would have caught it.
+
+The rail stays in the routing table. When credentials arrive, one boolean flips
+and `whatsapp_nudge` starts genuinely using WhatsApp.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

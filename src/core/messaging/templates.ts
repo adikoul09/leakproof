@@ -67,8 +67,10 @@ export function renderTemplate(rail: Rail, input: TemplateInput): string {
   );
 }
 
+export type Channel = 'email' | 'sms' | 'whatsapp' | 'none';
+
 /** Which channel a rail delivers over. Drives the cost meter and the message row. */
-export const RAIL_CHANNEL: Record<string, 'email' | 'sms' | 'whatsapp' | 'none'> = {
+export const RAIL_CHANNEL: Record<string, Channel> = {
   upi_payment_link: 'sms',
   netbanking_link: 'sms',
   card_retry_delayed_payday: 'sms',
@@ -78,3 +80,33 @@ export const RAIL_CHANNEL: Record<string, 'email' | 'sms' | 'whatsapp' | 'none'>
   human_escalation: 'none',
   do_nothing: 'none',
 };
+
+/**
+ * The channel a rail can ACTUALLY deliver over right now.
+ *
+ * Delivery is Razorpay's own notification on the payment link — `notify: {sms,
+ * email}` — which is what makes the recovery rail end to end without
+ * provisioning a separate email or WhatsApp provider. Razorpay has no WhatsApp
+ * notification, and Meta Cloud API credentials are not configured, so a rail
+ * asking for WhatsApp has no delivery mechanism at all.
+ *
+ * That used to fail silently and expensively: `notify` was `{sms: false, email:
+ * false}`, so the link was created, nobody was told about it, and the attempt
+ * was still marked `action_sent` and billed for a WhatsApp message. On the demo
+ * corpus that was 312 of 1,672 attempts — 19% of everything the system claimed
+ * to have done. See FAILURES.md #23.
+ *
+ * Until a WhatsApp provider exists, those fall back to SMS: the same phone
+ * number, a channel that actually delivers, recorded honestly as `sms` so the
+ * cost meter and the Decision Trace both say what really happened.
+ */
+export function effectiveChannel(
+  rail: string,
+  whatsappConfigured: boolean,
+): { channel: Channel; degradedFrom: Channel | null } {
+  const intended = RAIL_CHANNEL[rail] ?? 'email';
+  if (intended === 'whatsapp' && !whatsappConfigured) {
+    return { channel: 'sms', degradedFrom: 'whatsapp' };
+  }
+  return { channel: intended, degradedFrom: null };
+}

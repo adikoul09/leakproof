@@ -21,12 +21,12 @@ import { buildPolicyContext } from '@/core/policy/context';
 import { evaluatePolicy } from '@/core/policy/evaluate';
 import { parsePolicy } from '@/core/policy/schema';
 import { getLivePolicy } from '@/core/policy/store';
-import { RAIL_CHANNEL, renderTemplate } from '@/core/messaging/templates';
+import { effectiveChannel, renderTemplate } from '@/core/messaging/templates';
 import { RazorpayError, createPaymentLink } from '@/core/rails/razorpay';
 import { costOf, type CostItem } from '@/core/cost/meter';
 import type { Rail } from '@/core/routing/static-table';
 import { appendLedgerSafe } from '@/core/ledger/append';
-import { env } from '@/lib/env';
+import { env, optional } from '@/lib/env';
 import { inngest } from '@/lib/inngest';
 
 const MERCHANT_NAME = 'Kirana Cloud';
@@ -171,7 +171,13 @@ export const recoveryExecute = inngest.createFunction(
 
     // ── Create the link ────────────────────────────────────────────────
     const rail = snapshot.attempt.rail as Rail;
-    const channel = RAIL_CHANNEL[rail] ?? 'email';
+    // WhatsApp has no delivery path until Meta Cloud API credentials exist, and
+    // a rail that notifies nobody while reporting `action_sent` is worse than
+    // one that picks a channel it can actually reach. FAILURES.md #23.
+    const { channel, degradedFrom } = effectiveChannel(
+      rail,
+      optional.whatsappToken() !== null && optional.whatsappPhoneNumberId() !== null,
+    );
 
     const link = await step.run('create-payment-link', async () => {
       try {
@@ -206,6 +212,9 @@ export const recoveryExecute = inngest.createFunction(
 
     // ── Record the spend and the message ───────────────────────────────
     await step.run('record-send', async () => {
+      // Priced on the channel that actually carried it, not the one the rail
+      // asked for. Billing a WhatsApp rate for an SMS send would quietly
+      // corrupt cost-per-₹100-recovered, which is a judged number.
       const costItem: CostItem =
         channel === 'whatsapp'
           ? 'whatsapp_utility_message'
@@ -241,6 +250,24 @@ export const recoveryExecute = inngest.createFunction(
 
       await setEventState(eventId, 'action_sent');
     });
+
+    if (degradedFrom) {
+      // A channel downgrade changes who the customer hears from, so it is a
+      // decision and gets a receipt rather than a log line.
+      await step.run('ledger-channel-degraded', () =>
+        appendLedgerSafe({
+          eventId,
+          failureClass: 'unknown',
+          action: 'channel_degraded',
+          detail: {
+            rail,
+            intended_channel: degradedFrom,
+            actual_channel: channel,
+            why: 'WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID are not configured',
+          },
+        }),
+      );
+    }
 
     await step.run('ledger-sent', () =>
       appendLedgerSafe({

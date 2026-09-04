@@ -23,6 +23,9 @@ export const optional = {
   upstashUrl: () => process.env.UPSTASH_REDIS_REST_URL || null,
   resendApiKey: () => process.env.RESEND_API_KEY || null,
   armSalt: () => process.env.ARM_ASSIGNMENT_SALT || null,
+  /** Meta Cloud API. Both are required before a WhatsApp send is possible. */
+  whatsappToken: () => process.env.WHATSAPP_TOKEN || null,
+  whatsappPhoneNumberId: () => process.env.WHATSAPP_PHONE_NUMBER_ID || null,
 } as const;
 
 export function required(name: string): string {
