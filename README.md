@@ -197,11 +197,38 @@ Both stages are pure functions taking every input as an argument — no database
 no clock. That is what lets the replay engine drive the *same* code over a
 historical corpus instead of a second implementation that drifts.
 
-**The Payment Downtime API is recorded, never consulted.**
-`classifications.downtime_api_agrees` is written by the outage detector as
-agreement evidence. Feeding it into the classifier would make validating the
-classifier against it circular, and the resulting precision/recall number would
-mean nothing.
+**The Payment Downtime API is recorded, never consulted.** `outage.detect`
+(cron, every 5 minutes) opens, extends and closes `outage_windows` from the
+classifier's own verdicts, then cross-checks each one against Razorpay's feed
+and writes the result to `outage_windows.downtime_api_agrees` and
+`classifications.downtime_api_agrees`. Feeding it *into* the classifier would
+make validating the classifier against it circular — a test asserts `classify()`
+contains no reference to downtime data at all.
+
+The verdict is three-valued on purpose. NULL means the feed carried nothing for
+this method and had no opinion; `false` means it covered the method and did not
+flag this cohort. Collapsing the two would report silence as contradiction.
+
+```
+GET  /api/outages                          windows + agreement scorecard
+POST /api/outages/detect                   run now instead of waiting for the cron
+POST /api/outages/detect?backfill=true     reconstruct windows from a corpus
+```
+
+Backfill exists because a generated batch replays a whole day in eight minutes,
+so by the time anyone looks the incident is hours old and the live path — which
+only looks back far enough to track a stream — correctly finds nothing.
+
+On the demo batch it reconstructs the injected outage cleanly: **HDFC/card, 36
+events, 68% peak decline, ₹1,46,968 parked**, alongside five single-event false
+positives that match the scorecard's `fp` count.
+
+⚠️ **Agreement currently reads 0 of 6, and that is the correct answer.** The
+outage is one the generator injected; Razorpay cannot corroborate an incident
+that never happened. Each window records *why* — "feed covers card (4 rows) but
+did not flag HDFC". The agreement number only becomes meaningful against real
+traffic. See FAILURES.md #24 for the two ways this nearly reported zero for the
+wrong reasons.
 
 ### The policy gate
 
@@ -782,6 +809,11 @@ Stated up front rather than discovered by a judge. Full detail in
   on a synthetic batch also arrives as *organic*, so the attributed/organic
   split reads 0% — the incrementality maths is unaffected, since it measures
   rupees rather than attribution.
+- **The downtime agreement rate is 0 on synthetic data, by construction.** The
+  cross-check is wired and runs, but Razorpay's feed cannot corroborate an
+  outage the generator invented. The number only becomes meaningful against real
+  traffic, and the scorecard reports how many windows the feed had an opinion on
+  so it cannot be quoted without that context.
 - **Detection numbers recorded before the cohort-window fix are understated.**
   Classifications already in the database were produced by the unbounded-window
   code (FAILURES.md #20) and are not re-run automatically. The replay engine

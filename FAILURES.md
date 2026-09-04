@@ -1079,6 +1079,70 @@ and `whatsapp_nudge` starts genuinely using WhatsApp.
 
 ---
 
+## 24. The agreement scorecard would have reported zero for a spelling reason
+
+**When:** Building `outage.detect` (M3), the cross-check against Razorpay's
+Payment Downtime API.
+
+The cross-check is the only external corroboration this project claims, so it
+matters that a low agreement number means "the detector was wrong" and not
+something else. The first version matched a cohort to a downtime row by issuer
+string. Against the live test-mode feed:
+
+```
+our cohorts      HDFC   ICICI   SBI    AXIS   KOTAK   PNB    BOB
+the feed says    HDFC   ICIC    SBIN   UTIB   KKBK    PUNB   BARB
+```
+
+**Razorpay reports issuers as IFSC bank codes; we label them by common name.**
+Of the fifteen issuers the generator produces, exactly two — HDFC and Citi —
+are spelled the same in both vocabularies. Every other bank would have failed to
+match *even when Razorpay had flagged the same outage*, and the scorecard would
+have reported near-zero agreement as though the detector were wrong.
+
+**Fix:** an alias table, and a test that asserts `checkDowntime` matches
+`ICICI` against a feed row reading `ICIC`.
+
+**And a second, worse version of the same mistake.** The verdict is
+three-valued — NULL when the feed has no rows for the method at all, `false`
+when it covers the method and did not flag this cohort. But the scorecard
+computed "did the feed have an opinion?" by checking whether a downtime row had
+been matched, and a `false` verdict has no row to point at. So every window the
+feed genuinely disagreed with was dropped from the denominator, and:
+
+```
+per-window:   agrees = false  (six times)
+scorecard:    windows_feed_had_an_opinion_on: 0,  agreement_rate: null
+```
+
+The screen contradicted itself. Worse, it contradicted itself in the flattering
+direction — an agreement rate of `null` reads as "not enough data yet", while
+the truth was six recorded disagreements. Fixed by persisting the verdict on the
+window (`downtime_api_agrees`, three-valued, plus the reason in words) instead
+of re-deriving it from a join that cannot represent it.
+
+**What it reports now, and why that is the right answer:**
+
+```
+windows 6 · feed had an opinion on 6 · agreement_rate 0
+HDFC|card  36 events  peak 0.68  ₹1,46,968 parked
+           "feed covers card (4 rows) but did not flag HDFC"
+```
+
+Zero agreement is **correct**. The outage is one my own generator injected;
+Razorpay's feed cannot corroborate something that never happened. The machinery
+is wired, it runs, it records — and on synthetic traffic it honestly reports
+that nobody else saw the incident. The agreement number only becomes meaningful
+against real traffic, and the scorecard says which windows the feed had an
+opinion on so nobody can quote the rate without that context.
+
+A test also asserts that `classify()` contains no reference to downtime data at
+all. If the feed ever reaches the classifier the validation becomes circular and
+the agreement number stops meaning anything, and that is worth failing a build
+over.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

@@ -145,6 +145,16 @@ export const outageWindows = pgTable('outage_windows', {
   eventsAffected: integer('events_affected').default(0),
   paiseParked: bigint('paise_parked', { mode: 'number' }).default(0),
   detectedBy: text('detected_by').notNull(), // 'classifier'|'downtime_api'|'both'
+  /**
+   * Three-valued, like the column on `classifications`. NULL means the feed
+   * carried nothing for this method and therefore had no opinion; false means
+   * it covered the method and did not flag this cohort. Inferring this from
+   * whether a downtime row matched collapses the two, because a `false` verdict
+   * has no row to point at — and then the agreement denominator silently
+   * excludes every window the feed actually disagreed with.
+   */
+  downtimeApiAgrees: boolean('downtime_api_agrees'),
+  downtimeApiWhy: text('downtime_api_why'),
   downtimeApiStart: timestamp('downtime_api_start', { withTimezone: true }),
   downtimeApiEnd: timestamp('downtime_api_end', { withTimezone: true }),
   detectionLeadS: integer('detection_lead_s'), // negative = API saw it first

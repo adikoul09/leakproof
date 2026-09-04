@@ -29,6 +29,13 @@
       "when": 1788480000000,
       "tag": "0003_simulator",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788500000000,
+      "tag": "0004_outage_agreement",
+      "breakpoints": true
     }
   ]
 }

@@ -34,6 +34,10 @@ type Events = {
   'replay.run': {
     data: { runId: string };
   };
+  /** Run outage-window detection now, rather than waiting for the cron. */
+  'outage.detect': {
+    data: Record<string, never>;
+  };
 };
 
 export const inngest = new Inngest({
