@@ -12,6 +12,7 @@ import { webhookReceipts } from '@/db/schema';
 import { normalizeWebhook } from '@/core/ingest/normalize';
 import { insertPaymentEvent, upsertCustomer } from '@/core/ingest/persist';
 import { cohortDim } from '@/core/triage/classifier';
+import { recordLinkPaid, recordPaymentCaptured } from '@/core/experiment/recovery';
 import { postgresCohortStore } from '@/core/triage/cohort-store';
 import { inngest } from '@/lib/inngest';
 
@@ -32,6 +33,28 @@ export const ingestWebhook = inngest.createFunction(
     });
 
     const normalized = normalizeWebhook(receipt.payload);
+
+    // A recovery signal is handled before anything else: a paid link or a
+    // captured payment closes an at-risk event, and that is what the entire
+    // incrementality result is measured from.
+    if (normalized.recovery) {
+      const rec = normalized.recovery;
+      const outcome = await step.run('record-recovery', async () =>
+        rec.kind === 'link_paid'
+          ? recordLinkPaid(rec.referenceId, rec.amountPaise, new Date(rec.at))
+          : recordPaymentCaptured(rec.paymentId, rec.orderId, rec.amountPaise, new Date(rec.at)),
+      );
+      if (outcome.eventId) {
+        await step.run('mark-processed', () => markProcessed(receiptId));
+        return {
+          recovered: outcome.eventId,
+          attributed: outcome.attributed,
+          duplicate: outcome.alreadyRecovered,
+        };
+      }
+      // No open failure matched — fall through so a successful payment still
+      // feeds the cohort denominator.
+    }
 
     if (!normalized.event) {
       await step.run('mark-processed', () => markProcessed(receiptId));

@@ -337,6 +337,83 @@ possible moment.
 
 ---
 
+## 9. The blueprint's power criterion is the wrong criterion, and I only found out by measuring coverage
+
+**When:** Milestone 4, validating the incrementality maths.
+
+The blueprint defines the experiment as adequately powered when the confidence
+interval excludes zero **and `n_control ≥ 300`**. I implemented that, and it
+passed every unit test — because unit tests check that arithmetic matches a
+formula, and the formula was implemented correctly.
+
+So I asked the question the unit tests could not: **does the 95% interval
+actually cover?** Plant a known effect, measure it a few hundred times over
+noisy samples, and count how often the interval contains the truth.
+
+**First result: 91.7% against a nominal 95%.** An interval that covers 92% of
+the time while claiming 95% is not a rounding error — it is a systematically
+overconfident claim, and overconfidence is the specific failure this whole
+project exists to avoid.
+
+**First fix, and a false start.** The percentile bootstrap is known to
+under-cover on skewed data, and recovered revenue is very skewed — a handful of
+large tickets dominate. So I implemented **BCa** (bias-corrected and
+accelerated), which is the standard remedy. Result: 91.0%. No better.
+
+**The actual bug was in my test.** I was comparing the interval against a
+"truth" computed from the *observed* pooled mean ticket — a quantity that is
+itself random and moves with the sample. Against the true population mean,
+coverage was **93.3%** (percentile) and **92.8%** (BCa). The estimator was
+always closer to correct than my measurement of it.
+
+**Then the real finding.** Coverage still was not 95%, so I varied the control
+arm and measured again:
+
+| events in control | recovered in control | measured coverage |
+|---|---|---|
+| 200 | ≈20 | 91.5% |
+| 400 | ≈40 | 92.8% |
+| 1,000 | ≈100 | 92.8% |
+| 2,500 | ≈249 | 94.8% |
+| 6,000 | ≈599 | 95.0% |
+
+Coverage tracks **recovered** control events, not total control events. It
+reaches nominal around 250. The reason is straightforward once seen: the
+control arm's mean recovered value is estimated from its non-zero
+observations, and at a 10% organic rate, `n_control = 300` buys about **30** of
+them. Thirty heavily-skewed numbers is not enough to pin down a mean, whatever
+the denominator says.
+
+**So `n_control ≥ 300` is measuring the wrong thing.** It reads as a serious
+threshold and is satisfied by a sample where the interval is meaningfully too
+narrow.
+
+**Fix:** the threshold stays (it is a locked decision and it is not harmful),
+but the metric now reports a **caveat** naming the number of recovered control
+events and the coverage actually measured at that level. A 3,000-event batch at
+an 18% control split cannot reach 250 recovered — so the honest move is to show
+the number with its real precision stated, not to refuse to show it, and not to
+quietly present 93% coverage as 95%.
+
+BCa was kept: it is the right default for a skewed estimand, and it measured
+slightly better on the null case (7.0% vs 7.7% false-positive rate against a
+nominal 5%). It is behind a flag so the plain percentile interval stays
+available for comparison.
+
+**Cost:** ~50 minutes, and worth every minute — this is the number the project
+is judged on.
+
+**What it means:** an estimator can be arithmetically correct and still
+overclaim. The unit tests all passed before and after; only a coverage
+simulation could tell the difference. Two other things that fell out of the
+same session and are now permanent tests: the arm-assignment hash is uniform
+across all 100 buckets (χ² = 115.2, 99 df — consistent with uniform), and the
+p-value is floored at 1e-16 because `normalCdf` saturates past |z| ≈ 8 and was
+reporting **p = 0**, which is a claim of impossibility that no finite sample
+can support.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.
@@ -363,6 +440,11 @@ different facts and the agreement scorecard must not conflate them.
 sorted set for the 15-minute rolling decline rate. Upstash is not provisioned, so
 `cohort_counters` / `cohort_baselines` are Postgres tables behind a `CohortStore`
 interface. Correctness is identical; latency is worse; the swap is one file.
+
+**The rupee interval is approximate at demo scale.** Measured coverage is
+~93% against a nominal 95% when the control arm has fewer than ~250 recovered
+events, which a 3,000-event batch cannot reach. Reported as a caveat on the
+result itself. See #9.
 
 **Triage thresholds are untuned.** `n ≥ 8`, `3σ`, `0.25` absolute floor, EWMA
 `α = 0.3` are the blueprint's starting guesses, sitting in

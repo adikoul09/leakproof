@@ -21,7 +21,7 @@ Razorpay Buildathon, Track 03.
 | 1 | Webhook ingestion + failure taxonomy classification | ✅ working end to end |
 | 2 | Policy engine (caps, contact window, stop_on, breaker) | ✅ working, 41 tests |
 | 3 | One recovery rail end to end (Razorpay Payment Link) | ✅ real links created |
-| 4 | Control group + incrementality maths | 🟡 arms assigned + held out; CIs pending |
+| 4 | Control group + incrementality maths | ✅ validated against a planted effect |
 | 5 | Hash-chained audit ledger | 🟡 table + append-only trigger live |
 | 6 | Synthetic data generator | 🟡 ingest endpoint live, generator pending |
 | 7 | Control Tower dashboard | ⬜ |
@@ -62,7 +62,9 @@ the reference YAML.
 
 Other scripts: `npm test`, `npm run typecheck`, `npm run db:generate`,
 `npm run db:studio`, `npm run db:reset -- --yes` (development only), and
-`npm run gate -- <event_id>` to print the policy trace for a real event.
+`npm run gate -- <event_id>` to print the policy trace for a real event, and
+`npm run validate:incrementality` to plant a known effect and check the maths
+recovers it.
 
 ---
 
@@ -250,6 +252,93 @@ interface; the LLM boundary stays narrow by design — it receives an
 already-approved action and returns copy, and never decides whether to contact,
 how much to offer, or when to send.
 
+### The incrementality result ⭐
+
+**This is what the project is judged on.** Gross recovery is not a result: some
+failed payments come back on their own, and any dunning tool can claim credit
+for those. The only honest question is how many rupees came back *because of*
+the system.
+
+```
+incremental_paise = n_treated × (mean per-event recovered value in treated
+                                 − mean per-event recovered value in control)
+```
+
+Run `npm run validate:incrementality` — it plants a known effect and checks the
+system measures it back:
+
+```
+planting an effect over 6000 events
+  control organic recovery : 10.0%      leakproof arm true lift : +12.0pp
+
+  control    n= 1095  recovered= 105  rate= 9.59%  gross=  ₹10,18,250
+  naive      n= 1132  recovered= 162  rate=14.31%  gross=  ₹17,88,550
+  leakproof  n= 3773  recovered= 841  rate=22.29%  gross=  ₹80,37,450
+
+  planted truth        ₹47,49,452
+  measured incremental ₹45,28,905
+  95% interval         [₹28,93,680, ₹59,03,023]     covers truth: YES
+  relative error       −4.64%
+
+  gross would have claimed ₹80,37,450 — 1.77× the honest figure
+
+  lift vs control  12.70pp  95% CI [10.41, 14.80]   (planted 12.0pp)
+  lift vs naive     7.98pp                          (planted 8.0pp)
+```
+
+**1.77×** is the whole argument. A tool reporting gross recovery would claim
+nearly twice what this system actually caused.
+
+**The estimators**, all written out rather than pulled from a library, so the
+assumptions are visible and testable:
+
+- **Wilson score interval** for each arm's recovery rate. The textbook normal
+  interval produces bounds below zero at low rates and degenerates entirely at
+  0 or 100% recovery — both of which happen constantly in a two-day corpus.
+- **Newcombe's hybrid score interval** for the rate *difference*. Subtracting
+  two intervals, or a normal interval on the difference, misbehaves at exactly
+  the small rates and unequal arm sizes this experiment runs at.
+- **BCa bootstrap** (2,000 iterations, seeded) for the rupee interval,
+  resampling per-event recovered *values*. Bootstrapping a rate and multiplying
+  by a mean amount would assume a ₹40,000 failure and a ₹200 failure recover at
+  the same rate. They do not, and that assumption would understate the
+  uncertainty in exactly the direction that flatters the result.
+- **Pooled two-proportion z-test** for the p-value, floored at 1e-16 — `p = 0`
+  is a claim of impossibility no finite sample can support.
+
+**Everything is reproducible.** The bootstrap RNG is seeded and the seed ships
+in the response (`provenance`), so the same corpus gives the same interval on
+any machine, forever. `?seed=` lets a sceptical reader re-run it.
+
+**It reports on itself.** Alongside the number: `power_blockers` (why it is not
+powered, when it is not), `balance` (a randomisation check on mean ticket size
+across arms), `caveats`, and `unpriced_cost_items` — every cost rate still
+carrying a placeholder.
+
+**Measured, not assumed.** The 95% interval was checked by simulation, not
+trusted: plant an effect, measure it 400 times, count how often the interval
+contains the truth. It covers ~93% at demo scale and reaches the full 95% once
+the control arm has ~250 recovered events. That gap is reported as a caveat on
+the result rather than papered over — and it revealed that the blueprint's
+`n_control ≥ 300` power criterion measures the wrong quantity. FAILURES.md #9.
+
+Endpoints: `GET /api/metrics/summary?from=&to=&seed=` and
+`GET /api/metrics/timeseries?bucket=5m`.
+
+### Recovery detection
+
+Two paths, deliberately distinct:
+
+- **attributed** — a recovery link was paid. `payment_link.paid` carries our
+  attempt UUID as `reference_id`, so attribution is exact.
+- **organic** — the payment simply succeeded. Razorpay issues a *new* payment
+  id for a retry, so the **order id** is the only thread tying it back to the
+  failure it resolves.
+
+The organic path is not a nicety: it is the only way the control arm ever
+records a recovery. Without it the control rate reads zero and every
+incrementality figure is inflated to the point of fraud.
+
 ### Data model
 
 18 tables, `drizzle/0000_init.sql`. The blueprint's 15, plus:
@@ -295,8 +384,8 @@ src/core/
   routing/    static-table.ts
   rails/      razorpay.ts
   messaging/  templates.ts
-  experiment/ assign.ts
   cost/       meter.ts
+  experiment/ assign.ts, stats.ts, metrics.ts, metrics-store.ts, recovery.ts
   ledger/ replay/                                                ← milestones 5, 8
 src/jobs/     Inngest function definitions
 src/app/api/  route handlers

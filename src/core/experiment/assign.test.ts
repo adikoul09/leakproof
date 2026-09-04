@@ -89,3 +89,21 @@ describe('rail routing', () => {
     assert.equal(chooseRailNaive(1).chosenBy, 'naive_fixed');
   });
 });
+
+describe('bucket uniformity', () => {
+  it('spreads ids evenly across all 100 buckets', () => {
+    // The arm split is only as trustworthy as the hash underneath it. A hash
+    // that clumped would silently bias the experiment in a way no downstream
+    // test would catch — the arms would still look like 18/20/62.
+    const N = 200_000;
+    const buckets = new Array(100).fill(0);
+    for (let i = 0; i < N; i += 1) buckets[assignArm(`pay_UNIF${i}`, SALT).bucket] += 1;
+
+    const expected = N / 100;
+    const chiSquare = buckets.reduce((s, o) => s + (o - expected) ** 2 / expected, 0);
+    // 99 degrees of freedom: the 0.001 critical value is 148.2. Anything below
+    // that is consistent with a uniform hash.
+    assert.ok(chiSquare < 148.2, `chi-square ${chiSquare.toFixed(1)} suggests a non-uniform hash`);
+    assert.ok(Math.min(...buckets) > 0, 'every bucket must be reachable');
+  });
+});

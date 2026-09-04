@@ -78,6 +78,15 @@ export const paymentEvents = pgTable(
     amountPaise: bigint('amount_paise', { mode: 'number' }).notNull(),
     currency: text('currency').notNull().default('INR'),
     method: text('method'), // card|upi|netbanking|wallet|emandate
+    /**
+     * The Razorpay order this payment belongs to. Load-bearing for the control
+     * arm: when a customer retries on their own, Razorpay issues a *new*
+     * payment id against the *same* order, so the order is the only thread
+     * connecting an organic recovery back to the failure it resolves. Without
+     * it the control arm's recovery rate reads as zero and the whole
+     * incrementality result is inflated.
+     */
+    orderId: text('order_id'),
     issuer: text('issuer'), // HDFC|ICICI|SBI...
     cardNetwork: text('card_network'),
     amountBand: text('amount_band'), // '<500','500-1k','1k-5k','5k-25k','25k+'
@@ -98,6 +107,7 @@ export const paymentEvents = pgTable(
   (t) => [
     index('payment_events_state_failed_at_idx').on(t.state, t.failedAt.desc()),
     index('payment_events_cohort_idx').on(t.issuer, t.method, t.failedAt.desc()),
+    index('payment_events_order_idx').on(t.orderId),
   ],
 );
 

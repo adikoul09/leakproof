@@ -17,7 +17,8 @@
     "db:reset": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/reset.ts",
     "db:seed": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/seed-policy.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
-    "gate": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/gate-probe.ts"
+    "gate": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/gate-probe.ts",
+    "validate:incrementality": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/validate-incrementality.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

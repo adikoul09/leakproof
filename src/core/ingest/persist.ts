@@ -36,6 +36,7 @@ export async function insertPaymentEvent(e: NormalizedEvent): Promise<boolean> {
       amountPaise: e.amountPaise,
       currency: e.currency,
       method: e.method,
+      orderId: e.orderId,
       issuer: e.issuer,
       cardNetwork: e.cardNetwork,
       amountBand: e.amountBand,

@@ -28,6 +28,8 @@ const eventSchema = z.object({
   method: z.string().nullable().optional(),
   issuer: z.string().nullable().optional(),
   card_network: z.string().nullable().optional(),
+  /** Ties an organic retry back to the failure it resolves. */
+  order_id: z.string().nullable().optional(),
   err_code: z.string().nullable().optional(),
   err_description: z.string().nullable().optional(),
   err_source: z.string().nullable().optional(),
@@ -106,6 +108,7 @@ export async function POST(req: Request) {
         amountPaise: e.amount_paise,
         currency: e.currency,
         method: e.method ?? null,
+        orderId: e.order_id ?? null,
         issuer: e.issuer ?? null,
         cardNetwork: e.card_network ?? null,
         amountBand: amountBand(e.amount_paise),

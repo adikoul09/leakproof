@@ -26,6 +26,7 @@ export interface NormalizedEvent {
   amountPaise: number;
   currency: string;
   method: string | null;
+  orderId: string | null;
   issuer: string | null;
   cardNetwork: string | null;
   amountBand: string;
@@ -39,11 +40,27 @@ export interface NormalizedEvent {
   failedAt: Date;
 }
 
+/**
+ * A signal that some at-risk payment has been recovered.
+ *
+ *  - `link_paid`     one of our recovery links was paid. `referenceId` is the
+ *                    attempt UUID we set, so attribution is exact.
+ *  - `payment_captured` a payment succeeded. It is almost never the same
+ *                    payment id that failed — a retry creates a new one — so
+ *                    the order id is what ties it back. This is the path that
+ *                    detects *organic* recovery, including in the control arm,
+ *                    which is the baseline the whole result rests on.
+ */
+export type RecoverySignal =
+  | { kind: 'link_paid'; referenceId: string; amountPaise: number; at: Date }
+  | { kind: 'payment_captured'; orderId: string | null; paymentId: string; amountPaise: number; at: Date };
+
 export interface NormalizedWebhook {
   /** What the webhook told us about a payment outcome, for cohort counters. */
   outcome: 'failed' | 'succeeded' | 'other';
   event: NormalizedEvent | null;
   customer: NormalizedCustomer | null;
+  recovery: RecoverySignal | null;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -109,7 +126,29 @@ export function normalizeWebhook(body: Json): NormalizedWebhook {
   const eventType = body?.event as string | undefined;
   const payment = body?.payload?.payment?.entity;
 
-  if (!eventType || !payment) return { outcome: 'other', event: null, customer: null };
+  // A recovery link being paid is its own event shape.
+  if (eventType === 'payment_link.paid') {
+    const linkEntity = body?.payload?.payment_link?.entity;
+    const paidPayment = body?.payload?.payment?.entity;
+    const referenceId = linkEntity?.reference_id as string | undefined;
+    if (referenceId) {
+      return {
+        outcome: 'other',
+        event: null,
+        customer: null,
+        recovery: {
+          kind: 'link_paid',
+          referenceId,
+          amountPaise: Number(paidPayment?.amount ?? linkEntity?.amount_paid ?? linkEntity?.amount ?? 0),
+          at: fromUnix(paidPayment?.created_at ?? body?.created_at),
+        },
+      };
+    }
+  }
+
+  if (!eventType || !payment) {
+    return { outcome: 'other', event: null, customer: null, recovery: null };
+  }
 
   const outcome: NormalizedWebhook['outcome'] = FAILURE_EVENTS.has(eventType)
     ? 'failed'
@@ -128,6 +167,7 @@ export function normalizeWebhook(body: Json): NormalizedWebhook {
     amountPaise,
     currency: String(payment?.currency ?? 'INR'),
     method: payment?.method ?? null,
+    orderId: (payment?.order_id as string | undefined) ?? null,
     issuer: resolveIssuer(payment),
     cardNetwork: payment?.card?.network ?? null,
     amountBand: amountBand(amountPaise),
@@ -141,5 +181,16 @@ export function normalizeWebhook(body: Json): NormalizedWebhook {
     failedAt,
   };
 
-  return { outcome, event, customer };
+  const recovery: RecoverySignal | null =
+    outcome === 'succeeded'
+      ? {
+          kind: 'payment_captured',
+          orderId: (payment?.order_id as string | undefined) ?? null,
+          paymentId: String(payment.id),
+          amountPaise,
+          at: failedAt,
+        }
+      : null;
+
+  return { outcome, event, customer, recovery };
 }
