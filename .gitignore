@@ -47,3 +47,5 @@ leakproof-secrets.txt
 # private planning docs — kept local, never published
 LEAKPROOF_BLUEPRINT.md
 leakproof-claude-code-kickoff.md
+# working instructions; names the private docs above, so it stays private too
+CLAUDE.md
