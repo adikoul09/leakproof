@@ -51,6 +51,27 @@ export function cohortDim(c: Pick<CohortInputs, 'issuer' | 'method' | 'amountPai
   return parts.join('|');
 }
 
+/**
+ * The three tunable guards, overridable per call.
+ *
+ * Defaulting to TRIAGE keeps every existing caller identical. Passing them in
+ * is what lets `scripts/tune-triage.ts` sweep thresholds against the exact
+ * production classifier rather than a copy of it, and what will let the replay
+ * engine answer "what would we have caught at a 0.30 floor?" without a second
+ * implementation drifting out of step with this one.
+ */
+export interface SystemicThresholds {
+  minCohortN: number;
+  sigmaMultiplier: number;
+  absoluteFloor: number;
+}
+
+export const DEFAULT_THRESHOLDS: SystemicThresholds = {
+  minCohortN: TRIAGE.minCohortN,
+  sigmaMultiplier: TRIAGE.sigmaMultiplier,
+  absoluteFloor: TRIAGE.absoluteFloor,
+};
+
 export interface SystemicTest {
   passed: boolean;
   /** Each guard, with the number it was tested against — this is the trace. */
@@ -63,29 +84,33 @@ export interface SystemicTest {
  * The three-guard systemic test. ALL must pass (blueprint 6.5 step 4):
  *   cohort_n ≥ 8, decline_rate > baseline + 3σ, decline_rate > 0.25 absolute.
  */
-export function testSystemic(window: CohortWindow, baseline: CohortBaseline): SystemicTest {
+export function testSystemic(
+  window: CohortWindow,
+  baseline: CohortBaseline,
+  thresholds: SystemicThresholds = DEFAULT_THRESHOLDS,
+): SystemicTest {
   const sigma = Math.sqrt(baseline.variance);
-  const threshold = baseline.mean + TRIAGE.sigmaMultiplier * sigma;
+  const threshold = baseline.mean + thresholds.sigmaMultiplier * sigma;
   const zScore = sigma > 0 ? (window.declineRate - baseline.mean) / sigma : 0;
 
   const checks = [
     {
       rule: 'min_cohort_n',
-      expected: `>= ${TRIAGE.minCohortN}`,
+      expected: `>= ${thresholds.minCohortN}`,
       actual: String(window.nTotal),
-      pass: window.nTotal >= TRIAGE.minCohortN,
+      pass: window.nTotal >= thresholds.minCohortN,
     },
     {
       rule: 'above_baseline_sigma',
-      expected: `> ${threshold.toFixed(4)} (baseline ${baseline.mean.toFixed(4)} + ${TRIAGE.sigmaMultiplier}σ, σ=${sigma.toFixed(4)})`,
+      expected: `> ${threshold.toFixed(4)} (baseline ${baseline.mean.toFixed(4)} + ${thresholds.sigmaMultiplier}σ, σ=${sigma.toFixed(4)})`,
       actual: window.declineRate.toFixed(4),
       pass: window.declineRate > threshold,
     },
     {
       rule: 'absolute_floor',
-      expected: `> ${TRIAGE.absoluteFloor}`,
+      expected: `> ${thresholds.absoluteFloor}`,
       actual: window.declineRate.toFixed(4),
-      pass: window.declineRate > TRIAGE.absoluteFloor,
+      pass: window.declineRate > thresholds.absoluteFloor,
     },
   ];
 
@@ -119,6 +144,8 @@ export interface ClassifyInput extends CohortInputs {
   error: RawError;
   window: CohortWindow;
   baseline: CohortBaseline;
+  /** Defaults to the live TRIAGE constants. */
+  thresholds?: SystemicThresholds;
 }
 
 /**
@@ -131,7 +158,7 @@ export interface ClassifyInput extends CohortInputs {
  */
 export function classify(input: ClassifyInput): ClassificationResult {
   const taxonomy = classifyRawError(input.error);
-  const systemic = testSystemic(input.window, input.baseline);
+  const systemic = testSystemic(input.window, input.baseline, input.thresholds);
   const key = cohortKey(input);
   const dim = cohortDim(input);
 

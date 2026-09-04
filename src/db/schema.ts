@@ -99,6 +99,8 @@ export const paymentEvents = pgTable(
     errReason: text('err_reason'),
     state: eventStateT('state').notNull().default('at_risk'),
     isSynthetic: boolean('is_synthetic').notNull().default(true),
+    /** The generator run that produced this event. NULL for real webhook traffic. */
+    batchId: uuid('batch_id'),
     failedAt: timestamp('failed_at', { withTimezone: true }).notNull(),
     recoveredAt: timestamp('recovered_at', { withTimezone: true }),
     recoveredPaise: bigint('recovered_paise', { mode: 'number' }),
@@ -375,3 +377,62 @@ export const breakerState = pgTable('breaker_state', {
   overrideReason: text('override_reason'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ─── Synthetic batches ──────────────────────────────────────────────
+/**
+ * The generator's audit record — blueprint A8.
+ *
+ * A synthetic corpus is only worth anything if it can be regenerated. The spec
+ * here contains the seed, so anyone can reproduce byte-for-byte the events a
+ * reported number was computed over. `groundTruth` holds what was planted:
+ * which events are genuinely systemic, and the counterfactual rupee value of
+ * the treatment effect. That is what makes a lift auditable rather than
+ * asserted, which is the entire reason the generator is a first-class citizen
+ * of this repo rather than a script somebody ran once.
+ *
+ * The arm salt is NEVER stored here. It is a secret, and `spec` is served to
+ * the browser.
+ */
+export const syntheticBatches = pgTable('synthetic_batches', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  label: text('label'),
+  /** The normalised BatchSpec, seed included. Salt-free. */
+  spec: jsonb('spec').notNull(),
+  /** BatchSummary — counts, percentiles, adversarial breakdown. */
+  summary: jsonb('summary'),
+  /** GroundTruth — planted outage, systemic event ids, true incremental paise. */
+  groundTruth: jsonb('ground_truth'),
+  status: text('status').notNull().default('generating'), // generating|complete|failed
+  error: text('error'),
+  nEvents: integer('n_events').notNull().default(0),
+  nAccepted: integer('n_accepted').notNull().default(0),
+  nRejected: integer('n_rejected').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+});
+
+// ─── Out-of-order recovery buffer ───────────────────────────────────
+/**
+ * A success that arrived before the failure it resolves.
+ *
+ * Webhooks are not ordered. When a `payment.captured` lands before the
+ * `payment.failed` for the same order, matching strictly forward in time drops
+ * the recovery on the floor — and since the control arm recovers ONLY through
+ * organic matches, every dropped recovery pushes the control rate down and the
+ * measured incrementality up. Silently inflating the headline number is the
+ * worst failure mode this system has, so unmatched successes are parked here
+ * and re-checked when their failure arrives.
+ */
+export const unmatchedRecoveries = pgTable(
+  'unmatched_recoveries',
+  {
+    paymentId: text('payment_id').primaryKey(),
+    orderId: text('order_id'),
+    subscriptionId: text('subscription_id'),
+    amountPaise: bigint('amount_paise', { mode: 'number' }).notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    matchedAt: timestamp('matched_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('unmatched_recoveries_order_idx').on(t.orderId)],
+);

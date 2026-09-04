@@ -4,12 +4,14 @@ import { ledgerVerify } from './ledger-verify';
 import { metricsRollup } from './metrics-rollup';
 import { recoveryExecute } from './recovery-execute';
 import { recoveryPlan } from './recovery-plan';
+import { simulatorGenerate, simulatorGenerateFailed } from './simulator-generate';
 import { triageClassify } from './triage-classify';
 
 /**
  * Every Inngest function the app serves.
- *   pipeline: webhook → classify → assign → plan → execute
- *   crons:    metrics.rollup, ledger.verify
+ *   pipeline:  webhook → classify → assign → plan → execute
+ *   simulator: simulator.generate → the same pipeline, from the top
+ *   crons:     metrics.rollup, ledger.verify
  */
 export const functions = [
   ingestWebhook,
@@ -19,4 +21,6 @@ export const functions = [
   recoveryExecute,
   metricsRollup,
   ledgerVerify,
+  simulatorGenerate,
+  simulatorGenerateFailed,
 ];

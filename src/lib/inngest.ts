@@ -21,6 +21,15 @@ type Events = {
   'recovery.execute': {
     data: { eventId: string; attemptId: string; scheduledFor: string };
   };
+  /**
+   * A synthetic batch has been requested. The events are NOT carried on the
+   * event — the generator is a pure function of the stored spec, so the job
+   * regenerates them from the seed. Putting thirty thousand events in an
+   * Inngest payload would be a slow way to send a number.
+   */
+  'simulator.generate': {
+    data: { batchId: string };
+  };
 };
 
 export const inngest = new Inngest({

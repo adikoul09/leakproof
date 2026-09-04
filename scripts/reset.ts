@@ -30,6 +30,8 @@ const TABLES = [
   'bandit_arms',
   'breaker_state',
   'audit_ledger',
+  'unmatched_recoveries',
+  'synthetic_batches',
 ];
 
 async function main() {

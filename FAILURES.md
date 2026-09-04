@@ -494,6 +494,272 @@ once, does tampering get caught.
 
 ---
 
+## 11. The blueprint's EWMA baseline maintenance destroys outage detection
+
+**When:** Milestone 6, tuning the detector against the generator's injected outage.
+
+FAILURES #3 was the same mistake one level down: advancing the EWMA baseline
+once per *classified event* let a live outage teach the baseline that outages
+are normal. The fix was to move baseline maintenance to the `outage.detect`
+cron, where it can look at completed windows instead of a live spike. That is
+what the blueprint specifies, and it is what I intended to build.
+
+With a generator and a ground truth I could finally measure it instead of
+reasoning about it. `npm run tune:triage` replays the corpus twice — once with
+the baseline frozen at its seeded prior, once advancing the EWMA from each
+*closed* 5-minute bucket, which is the careful version:
+
+```
+seeded    n≥8 3σ floor 0.25   precision 77.4%   recall 96.7%   tp 1140 fp 339 fn 43
+adaptive  n≥8 3σ floor 0.25   precision 31.3%   recall  0.8%   tp   10 fp  22 fn 1173
+```
+
+**Recall collapses from 97% to 0.8%.** The careful version is catastrophically
+worse than not doing it at all.
+
+The mechanism is sampling noise, not contamination. A 5-minute bucket on a real
+cohort holds about six attempts. At a true decline rate of 13%, a six-sample
+proportion has a standard deviation near 0.14 — so the bucket-to-bucket rate
+genuinely bounces between 0 and 0.33 with nothing wrong. The EWMA cannot tell
+that variance from real volatility, absorbs it as σ, and the 3σ threshold climbs
+to roughly `0.13 + 3(0.14) = 0.55`. The injected outage runs at 0.62 and the
+window rate is diluted at its edges, so almost nothing ever clears the bar.
+
+**An EWMA over observed proportions has no idea how many samples each
+proportion was computed from.** That is the whole bug. The seeded prior wins
+precisely because its σ = 0.05 is an *assumption* about how much a cohort's
+decline rate really moves, rather than a measurement contaminated by
+small-sample noise.
+
+**Fix:** do not build it. `updateBaseline` stays implemented and stays uncalled,
+with the measurement written into `config.ts` next to `seedBaselineRate` so the
+next person to notice the dead code finds the reason before deleting it.
+
+The principled version is a **one-sided binomial test** — is this window's
+failure count improbable under the baseline rate *given n* — which handles small
+samples by construction instead of hoping σ absorbs them. That is a real
+improvement and it is not built; it is a redesign of the detector's core test,
+and the build order says ship. Recorded here as the honest next step rather than
+as a nice-to-have.
+
+---
+
+## 12. The three-guard systemic test is two guards
+
+**When:** Milestone 6, reading the threshold sweep.
+
+The blueprint's systemic test has three guards: `cohort_n ≥ 8`, `rate > baseline
++ 3σ`, and `rate > 0.25 absolute`. I implemented all three, wrote a test
+asserting all three must pass, and moved on.
+
+The sweep varied `sigmaMultiplier` from 1.5 to 4 across every combination of the
+other two and the scores were **identical**. Under the seeded prior the σ
+threshold is `0.08 + k × 0.05`; at the deployed `k = 3` that is 0.23, which sits
+*below* the 0.25 absolute floor. The floor always binds first, so the σ test
+never changes an outcome. It only starts to matter past `k ≈ 5.4`.
+
+Nothing is broken — but "three independent guards" is a claim about the system,
+and it was not true. A demo that says "all three must pass" while one of them
+provably cannot fail is overstating the design.
+
+**Fix:** the tuner detects this and prints it every run, so it cannot quietly
+become true again after someone retunes the floor. `config.ts` says it at the
+constant. The guard is kept rather than deleted: it binds on any cohort whose
+baseline has genuinely been measured, and the day the detector gets a real
+baseline it starts doing work.
+
+---
+
+## 13. The detector's thresholds missed the blueprint's own bar
+
+**When:** Milestone 6. This one was on the list from milestone 1 and stayed
+open for five milestones.
+
+The blueprint is explicit that `n≥8`, `3σ`, `0.25` are assumptions and must be
+tuned until precision and recall both clear 0.8. Measured against 1,165
+ground-truth systemic events across six seeded corpora, the shipped defaults
+scored:
+
+```
+precision 77.4%   recall 96.7%   8.8 false alarms per 1,000 failures
+```
+
+**It missed the bar** — and it missed on precision, which is the expensive side
+here. A false systemic call parks a recoverable payment behind the circuit
+breaker, so on this product a false positive costs real revenue by *declining to
+act*. The system was over-eager in the direction that quietly loses money.
+
+The sweep's single best configuration by F1 was `minCohortN 24` (F1 0.961). I
+did not take it. Requiring 24 attempts in a 15-minute window before a cohort can
+be judged at all means the detector scores beautifully on this corpus and is
+permanently blind at any merchant quieter than it — buying precision by
+declining to look.
+
+**Fix:** hold `minCohortN` at 8 and raise the absolute floor from 0.25 to 0.35.
+
+```
+floor 0.25   P 77.4%  R 96.7%   8.83 false alarms/1k   detection lag 153s
+floor 0.30   P 87.1%  R 95.3%   4.40 false alarms/1k   detection lag 232s
+floor 0.35   P 94.6%  R 93.6%   1.69 false alarms/1k   detection lag 346s   ← shipped
+floor 0.45   P 98.4%  R 91.3%   0.47 false alarms/1k   detection lag 442s
+```
+
+The price is detection lag: 153s → 346s. Five minutes into an outage rather than
+two and a half. Worth it to cut false alarms by 5×.
+
+`npm run tune:triage` exits non-zero if the deployed configuration misses the
+bar, so this cannot silently regress.
+
+---
+
+## 14. My own generator's ground truth was the estimator marking its own homework
+
+**When:** Milestone 6, writing the incrementality scorecard.
+
+The first version of the generator reported ground-truth incremental revenue as
+`n_treated × (mean recovered value treated − mean control)` — computed off the
+corpus it had just emitted. Comparing the estimator's output to that would have
+shown a near-perfect match on every run, because **it is the same formula**. It
+would have proved the arithmetic ran twice.
+
+**Fix:** make the ground truth counterfactual. Recovery is decided by a *single*
+uniform draw `u` per event:
+
+```
+recovers              when  u < organic + uplift
+would have anyway     when  u < organic
+caused by treatment   when  organic ≤ u < organic + uplift
+```
+
+So the generator knows, per event, whether that recovery was *caused* by the
+treatment. Two independent draws would have made this unknowable.
+
+The first honest comparison was uncomfortable. On one 24-hour seed:
+
+```
+true incremental (counterfactual)   ₹8,97,066   over 243 caused recoveries
+sample difference in means          ₹2,37,201
+```
+
+**A 3.8× gap**, driven entirely by which arm happened to catch the largest
+tickets — the control arm's 56 recoveries included a couple of enormous ones and
+dragged its mean up. Over the same corpus the *rate* lift was accurate to within
+a percentage point (12.15pp measured against 12.85pp true).
+
+This is not a bug in the estimator. `n × (mean_t − mean_c)` is unbiased; it is
+just very high variance on a log-normal ticket distribution at this sample size.
+But it means **the rupee point estimate is not the number to lead with**, and
+the BCa interval is not decoration. `GET /api/simulator/batches/:id` now reports
+whether the interval covered the planted truth, which is the only version of
+this check worth running.
+
+---
+
+## 15. A duplicate webhook was counted twice in the cohort — a bug I wrote this milestone
+
+**When:** Milestone 6, first end-to-end run of a generated batch.
+
+The pipeline started throwing `duplicate key value violates unique constraint
+"recovery_attempts_event_attempt_uq"`. Two `recovery.plan` runs were racing into
+the same `(event_id, attempt_no)`.
+
+Batching the ingest for speed introduced it. The old path handled one event at a
+time and `insertPaymentEvent` returned false for a redelivery. The bulk version
+inserts the chunk, gets back the set of ids that were genuinely new, and then
+walks the chunk:
+
+```ts
+const newIds = await insertPaymentEvents(chunk);
+for (const e of chunk) {
+  if (!newIds.has(e.id)) continue;
+  observations.push(...);      // cohort counter
+  queuedForTriage.push(e.id);  // Inngest
+}
+```
+
+A byte-identical redelivery **inside the same chunk** appears twice in `chunk`.
+The insert collapses it to one row, so `newIds` contains the id — and the loop
+therefore fires twice for it. The crash was the loud symptom. The quiet one
+mattered more: **the cohort's failure count was inflated by every duplicate
+delivery**, and the cohort decline rate is the direct input to the systemic
+detector. Duplicates would have been manufacturing outages.
+
+**Fix:** a `counted` set inside the flush. Three lines.
+
+Two things about this are worth saying. First, the generator found it — this is
+exactly the adversarial case the corpus is built to contain, and it found the
+bug on the first real run. Second, it would have been invisible without the
+unique constraint: the cohort inflation produces no error, just a slightly wrong
+number in the direction that makes the demo look more exciting.
+
+---
+
+## 16. The generator reported 73 out-of-order deliveries when it had emitted 8
+
+**When:** Milestone 6, writing the generator's tests.
+
+`out_of_order_recovery` is one of the adversarial traits: the success arrives
+before the failure it resolves. The generator marked it on a share of failures
+and counted it in the summary at the point of marking — but the trait can only
+be *realised* on an event that actually recovers, and only ~13% do. So the
+summary claimed 73 out-of-order deliveries in a corpus containing 8.
+
+A generator that misreports its own corpus is worse than one that does not have
+the feature, because everything downstream is scored against that summary.
+
+**Fix:** decide recovery *before* assigning hostile traits, so
+`out_of_order_recovery` is only ever assigned to an event that will emit one.
+When the redraw lands on a non-recovering event it picks from the four
+order-free kinds instead, so the adversarial share still comes out exact.
+
+The first fix was wrong too, and the test caught it:
+`ADVERSARIAL_KINDS[intBetween(rng, 0, ADVERSARIAL_KINDS.length - 2)]` still
+includes `out_of_order_recovery` — it is at index 2, and `length - 2` is 3, so
+the range 0..3 covers it. Off by one in a fix for a counting bug.
+
+---
+
+## 17. The recovery rail rate-limited itself off Razorpay
+
+**When:** Milestone 6, first full batch through the live pipeline.
+
+A 600-event synthetic batch put a few hundred payment-link creations into flight
+at once and Razorpay started returning `Too many requests`. Nothing was lost —
+429 is already classified retriable and Inngest retried — but this is a real
+production failure mode, not a simulator artefact.
+
+**A recovery rail that DDoSes its own provider under load will fail during an
+outage**, which is precisely when every failed payment arrives at once and every
+one of them wants a link. The load pattern that broke it is the load pattern the
+product exists for.
+
+**Fix:** `concurrency: { limit: 5 }` and `throttle: { limit: 40, period: '1m' }`
+on `recovery.execute`. Inngest holds the queue durably, so throttling costs
+latency rather than work — a sleep inside the function would have occupied a
+worker for the same delay.
+
+---
+
+## 18. `db:migrate` reported success and applied nothing
+
+**When:** Milestone 6, adding the simulator tables.
+
+Migrations in this repo are hand-written SQL, because two of them do things
+`drizzle-kit generate` will not emit (the audit ledger's append-only trigger,
+`IF NOT EXISTS` guards). I wrote `0003_simulator.sql`, ran `npm run db:migrate`,
+got `migrations applied`, and moved on.
+
+The tables were not there. Drizzle's migrator reads `drizzle/meta/_journal.json`
+to decide what to run, not the directory listing — so an SQL file with no
+journal entry is invisible, and applying zero migrations is a successful run.
+
+**Fix:** add the journal entry. Recorded because it is a silent-success failure,
+the category this project keeps finding: nothing errored, the tool reported the
+outcome I wanted, and the only way to notice was to check the database for a
+table I had just been told was created.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

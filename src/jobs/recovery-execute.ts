@@ -33,7 +33,26 @@ const MERCHANT_NAME = 'Kirana Cloud';
 const LINK_TTL_HOURS = 72;
 
 export const recoveryExecute = inngest.createFunction(
-  { id: 'recovery-execute', name: 'recovery.execute', retries: 3 },
+  {
+    id: 'recovery-execute',
+    name: 'recovery.execute',
+    retries: 3,
+    /**
+     * Razorpay rate-limits payment link creation, and this is the only job that
+     * calls it. Found the hard way: a 600-event synthetic batch put a few
+     * hundred link creations into flight at once and the API started returning
+     * `Too many requests`. The errors are retriable so nothing was lost, but a
+     * recovery rail that DDoSes its own provider under load is a rail that will
+     * fail during an outage — which is precisely when every failed payment
+     * arrives at once and every one of them wants a link.
+     *
+     * Throttling here rather than at the call site because Inngest's queue can
+     * hold the work durably; a sleep inside the function would just occupy a
+     * worker. `concurrency` caps how many run at once, `throttle` caps the rate.
+     */
+    concurrency: { limit: 5 },
+    throttle: { limit: 40, period: '1m', burst: 5 },
+  },
   { event: 'recovery.execute' },
   async ({ event, step }) => {
     const { eventId, attemptId, scheduledFor } = event.data;

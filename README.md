@@ -23,7 +23,7 @@ Razorpay Buildathon, Track 03.
 | 3 | One recovery rail end to end (Razorpay Payment Link) | ✅ real links created |
 | 4 | Control group + incrementality maths | ✅ validated against a planted effect |
 | 5 | Hash-chained audit ledger | ✅ every decision writes a receipt |
-| 6 | Synthetic data generator | 🟡 ingest endpoint live, generator pending |
+| 6 | Synthetic data generator | ✅ seeded, documented, and used to tune the detector |
 | 7 | Control Tower dashboard | ⬜ |
 | 8 | Replay / what-if engine | ⬜ |
 
@@ -60,12 +60,27 @@ Note: the contact window is 08:00–19:00 IST and bank holidays defer, so outsid
 those hours the pipeline correctly *defers* rather than sends. `policies/` holds
 the reference YAML.
 
+Fill the tower with synthetic traffic:
+
+```bash
+npm run simulate                  # 3,000 at-risk events + an injected issuer outage
+npm run simulate -- --preset panel   # ~600 events, for a live demo
+```
+
 Other scripts: `npm test`, `npm run typecheck`, `npm run db:generate`,
-`npm run db:studio`, `npm run db:reset -- --yes` (development only), and
-`npm run gate -- <event_id>` to print the policy trace for a real event, and
+`npm run db:studio`, `npm run db:reset -- --yes` (development only),
+`npm run gate -- <event_id>` to print the policy trace for a real event,
 `npm run validate:incrementality` to plant a known effect and check the maths
-recovers it, and `npm run ledger:tamper` to attack the hash chain and watch it
-detect the tampering.
+recovers it, `npm run ledger:tamper` to attack the hash chain and watch it
+detect the tampering, and `npm run tune:triage` to re-tune the systemic detector
+against a known outage (exits non-zero if it misses 0.8 precision / 0.8 recall).
+
+**Demoing to a panel:** generate the big batch *before* anyone is watching. A
+3,000-failure batch is ~30,000 events through the real pipeline and ingestion
+plus triage takes several minutes. Use `--preset panel` live. Generate on a
+working day, too — the contact window is 08:00–19:00 IST and bank holidays
+defer, so a batch made on a holiday shows a queue of correctly deferred events
+and nothing being sent.
 
 ---
 
@@ -121,9 +136,41 @@ guards pass over a 15-minute rolling window:
 
 - `cohort_n ≥ 8` — small-sample guard
 - `decline_rate > baseline + 3σ` (EWMA baseline, α = 0.3)
-- `decline_rate > 0.25` absolute floor
+- `decline_rate > 0.35` absolute floor
 
 Confidence is `logistic(z)` clipped to [0.5, 0.99].
+
+**These thresholds are tuned, not guessed.** `npm run tune:triage` replays six
+seeded corpora — 1,165 ground-truth systemic events — through the real
+classifier and the real cohort store, sweeps 360 configurations, and exits
+non-zero if the deployed one misses the blueprint's bar of 0.8 precision and 0.8
+recall:
+
+```
+precision 94.6%   recall 93.6%   1.69 false alarms per 1,000 failures
+detection lag 346s on the degraded cohort
+```
+
+Two things the tuning turned up, both stated rather than buried:
+
+- **The floor was wrong.** At the blueprint's 0.25 the detector scored 77.4%
+  precision — it missed the bar by firing on small-sample noise. Raising it to
+  0.35 cut false alarms 5× for 3 minutes of extra detection lag. Precision is
+  the expensive side here: a false systemic call parks a *recoverable* payment
+  behind the circuit breaker, so being over-eager loses revenue quietly.
+- **It is really two guards, not three.** Under the seeded prior the σ threshold
+  is 0.23, below the 0.35 floor, so the floor always binds first and the σ test
+  never changes an outcome. The tuner prints this every run.
+
+And one thing that got measured and then *not* built: advancing the EWMA
+baseline from closed 5-minute buckets — the maintenance the blueprint assigns to
+`outage.detect` — drops recall from 97% to **0.8%**. A 5-minute bucket holds ~6
+attempts, its observed rate carries a sampling SD near 0.14, and an EWMA has no
+idea how many samples each proportion came from, so σ inflates until the 3σ
+threshold sits above the outage it exists to catch. The seeded prior wins
+because its σ is an assumption rather than a contaminated measurement. The
+principled fix is a binomial test that knows `n`; see
+[FAILURES.md](FAILURES.md) #11.
 
 A `customer`-flavoured failure **never** becomes systemic no matter how many
 arrive together. Ten people short of funds is not an outage, and treating it as
@@ -387,6 +434,91 @@ monitoring cannot ignore it), `GET /api/ledger/export.csv` (streamed, includes
 both hashes so the export verifies independently of this app). `ledger.verify`
 also runs hourly as a cron.
 
+### The synthetic data generator
+
+Every number LEAKPROOF reports about itself was computed over a corpus this
+generator made, so it is a first-class part of the repo rather than a script
+somebody ran once. **How it was built is published**, in
+[docs/data-generation.md](docs/data-generation.md), because that is the
+difference between a lift you can audit and a lift you have to take on trust.
+
+All customer data in this system is synthetic. Every screen says so.
+
+```bash
+npm run simulate                        # 3,000 at-risk events + a 45-min HDFC card outage
+npm run simulate -- --preset panel      # small and fast, for a live demo
+npm run simulate -- --preset null_test  # the A/A test: no effect planted at all
+npm run simulate -- --dry-run           # describe the batch, write nothing
+```
+
+or `POST /api/simulator/generate` → `202 { batch_id }`, operator-guarded, with
+the work running in Inngest.
+
+**A batch is a pure function of its seed.** Same spec in, byte-identical events
+out, on any machine, forever — asserted in the tests, not hoped for. The seed is
+stored on the batch row, so the corpus behind any reported number can be
+regenerated and checked.
+
+`count` is the number of **failed** events. Successes are generated on top —
+roughly ten per failure — because the cohort decline rate is a ratio and a
+corpus of nothing but failures makes every cohort read 100% declined, which
+makes the systemic detector meaningless.
+
+What is modelled, and why each one earns its place:
+
+| | |
+|---|---|
+| Log-normal tickets per method | The tail is the hard part. Uniform amounts would engineer away the variance that dominates the rupee interval. |
+| Diurnal curve + payday cycle | The overnight trough is what produces cohorts below `n ≥ 8`. A detector never shown a quiet hour will call an outage off three transactions. |
+| A realistic outage payload mix | 30% unhelpful `gateway_technical_error`, 22% Razorpay's `payment_failed` shrug, and 8% ordinary customer failures that happen to land in the window. Uniformly labelling them `issuer_down` would make detection trivial and the test worthless. |
+| Organic recovery threaded by `order_id` | A new payment id against the same order, exactly as Razorpay does on a retry. The control arm recovers by no other route. |
+| Right-censoring | A recovery that would land after the window closes is not emitted — it has not happened yet. On a 4-hour window that is over a third of them. |
+| Adversarial cases | Unlabelled errors, byte-identical redeliveries, recoveries that arrive *before* their failure, opted-out customers, webhooks hours late. |
+
+**Ground truth is per event and counterfactual.** Systemic-or-not comes from the
+payload the generator planted, not from membership of the outage window — an
+insufficient-funds decline inside the outage is still idiosyncratic, and
+counting it as systemic would hand the detector precision it did not earn. And
+recovery is decided by a *single* uniform draw, so the generator knows which
+recoveries the treatment actually **caused**:
+
+```
+recovers              when  u < organic + uplift
+would have anyway     when  u < organic
+caused by treatment   when  organic ≤ u < organic + uplift
+```
+
+That distinction is not pedantry. The first version reported ground truth as
+`n × (mean_treated − mean_control)`, which is *the estimator's own formula* —
+comparing the two would have proved the arithmetic ran twice. Against the real
+counterfactual, one 24-hour seed gave ₹8,97,066 planted against ₹2,37,201
+measured: a 3.8× gap, entirely from which arm caught the largest tickets, while
+the *rate* lift over the same corpus was accurate to within a percentage point.
+Read the interval, not the point, and prefer the rate.
+[FAILURES.md](FAILURES.md) #14.
+
+`GET /api/simulator/batches/:id` puts planted next to measured — detection
+precision/recall against per-event truth, and whether the incrementality
+interval covered the counterfactual.
+
+⚠️ **Read this before believing any lift measured on synthetic data.** A
+synthetic customer cannot pay a real Razorpay payment link, so on synthetic data
+the treated arms have no mechanism to actually recover more money. The uplift is
+**planted by construction**. It validates that the estimator recovers an effect
+known to be present; it is **not** evidence that LEAKPROOF recovers revenue on
+real traffic. The A/A preset plants nothing at all, and that is the more
+valuable of the two: an estimator that reports a lift on data containing none is
+broken, and no A/B result from it can be trusted afterwards.
+
+An injected outage is also, by construction, detectable. Real degradation is
+messier — partial, drifting, overlapping. The precision and recall above are an
+upper bound, and real-traffic validation is untested.
+
+`POST /api/simulator/push-to-razorpay` creates genuine test-mode **orders** for a
+subset, so ids resolve in the Razorpay dashboard. It does not manufacture a real
+decline: payments are created through checkout, not the API. The part that is
+real end to end is the recovery rail.
+
 ### Recovery detection
 
 Three paths, deliberately distinct:
@@ -523,9 +655,33 @@ Stated up front rather than discovered by a judge. Full detail in
   Gazetted holidays only — observances are filtered out, because caching them
   would have deferred recovery on 54 days a year. A state-only holiday is
   currently treated as a working day. FAILURES.md #5.
-- **Triage thresholds are untuned.** `n ≥ 8`, `3σ`, `0.25`, `α = 0.3` are the
-  blueprint's starting guesses. They have to clear precision *and* recall above
-  0.8 against the generator's injected outage, and that has not been measured.
+- **Triage thresholds are now tuned, and the tuning moved one of them.**
+  `npm run tune:triage` scores the detector against 1,165 ground-truth systemic
+  events: 94.6% precision, 93.6% recall. The blueprint's 0.25 absolute floor
+  scored 77.4% precision and missed the bar, so it ships at 0.35. Two caveats
+  stay: the σ guard is inert at these settings (the floor always binds first, so
+  it is two guards not three), and an injected outage is by construction
+  detectable — these numbers are an upper bound and real-traffic validation is
+  untested. FAILURES.md #11–13.
+- **The EWMA baseline never advances, deliberately.** `updateBaseline` is
+  implemented and uncalled. Advancing it from closed 5-minute buckets, as the
+  blueprint's `outage.detect` would, drops recall from 97% to 0.8%: a 5-minute
+  bucket holds ~6 attempts and an EWMA cannot tell that sampling noise from real
+  volatility, so σ inflates past the outage it is meant to catch. Every cohort is
+  judged against a seeded prior. The principled fix is a binomial test that knows
+  `n`, and it is not built. FAILURES.md #11.
+- **A synthetic batch's lift is planted, and its attribution is meaningless.**
+  A synthetic customer cannot pay a real payment link, so treated arms have no
+  mechanism to recover more money and any uplift is put there by the generator.
+  It validates the estimator; it does not evidence the product. Every recovery
+  on a synthetic batch also arrives as *organic*, so the attributed/organic
+  split reads 0% — the incrementality maths is unaffected, since it measures
+  rupees rather than attribution.
+- **The rupee point estimate is high-variance and the interval is not
+  decoration.** Measured against a counterfactual ground truth on a heavy-tailed
+  corpus, one seed's planted ₹8,97,066 came back as a ₹2,37,201 point estimate,
+  while the *rate* lift was accurate to within a percentage point. Lead with the
+  rate; read the interval, not the point. FAILURES.md #14.
 - **No Hinglish voice rail** (`FEATURE_VOICE=false`); **subscriptions, not
   invoices**, as the second surface.
 - **`subscription.charged` is handled in code but must be registered on the

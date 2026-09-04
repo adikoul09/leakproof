@@ -124,3 +124,49 @@ export const postgresCohortStore: CohortStore = {
       });
   },
 };
+
+export interface CohortObservation {
+  cohortDim: string;
+  at: Date;
+  failed: boolean;
+}
+
+/**
+ * Bulk counter update.
+ *
+ * `observe` is one upsert per payment, which is right for a webhook and
+ * hopeless for a thirty-thousand-event generated batch. Observations collapse
+ * onto (dim, 5-minute bucket) pairs, of which even a full day's corpus has only
+ * a few hundred — so aggregate in memory first and write one row per pair.
+ * Arithmetically identical to calling `observe` in a loop.
+ */
+export async function observeMany(
+  observations: CohortObservation[],
+  chunkSize = 500,
+): Promise<number> {
+  const grouped = new Map<string, { cohortDim: string; bucketStart: Date; nTotal: number; nFailed: number }>();
+  for (const o of observations) {
+    const bucket = bucketStart(o.at);
+    const key = `${o.cohortDim}@${bucket.getTime()}`;
+    const g = grouped.get(key) ?? { cohortDim: o.cohortDim, bucketStart: bucket, nTotal: 0, nFailed: 0 };
+    g.nTotal += 1;
+    if (o.failed) g.nFailed += 1;
+    grouped.set(key, g);
+  }
+
+  const rows = [...grouped.values()];
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    await db
+      .insert(cohortCounters)
+      .values(rows.slice(i, i + chunkSize))
+      .onConflictDoUpdate({
+        target: [cohortCounters.cohortDim, cohortCounters.bucketStart],
+        set: {
+          nTotal: raw`${cohortCounters.nTotal} + excluded.n_total`,
+          nFailed: raw`${cohortCounters.nFailed} + excluded.n_failed`,
+          updatedAt: new Date(),
+        },
+      });
+  }
+  return rows.length;
+}

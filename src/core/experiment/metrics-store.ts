@@ -17,6 +17,12 @@ import { type ArmsInput, type MetricEvent, computeMetrics, type MetricsSummary }
 export interface MetricsWindow {
   from?: Date;
   to?: Date;
+  /**
+   * Restrict to one generated batch. Lets a synthetic run be measured against
+   * the ground truth it was generated with, without the numbers being polluted
+   * by whatever else is in the table.
+   */
+  batchId?: string;
 }
 
 const ARMS: Arm[] = ['control', 'naive', 'leakproof'];
@@ -25,6 +31,7 @@ function windowClause(w: MetricsWindow) {
   const parts = [];
   if (w.from) parts.push(gte(paymentEvents.failedAt, w.from));
   if (w.to) parts.push(lte(paymentEvents.failedAt, w.to));
+  if (w.batchId) parts.push(eq(paymentEvents.batchId, w.batchId));
   return parts.length ? and(...parts) : undefined;
 }
 

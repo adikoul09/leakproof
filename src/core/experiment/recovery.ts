@@ -18,7 +18,7 @@
  */
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { paymentEvents, recoveryAttempts } from '@/db/schema';
+import { paymentEvents, recoveryAttempts, unmatchedRecoveries } from '@/db/schema';
 
 /** States that still count as recoverable. A lost or stopped event is closed. */
 const OPEN_STATES = [
@@ -142,4 +142,76 @@ async function markRecovered(eventId: string, amountPaise: number, at: Date): Pr
     .where(and(eq(paymentEvents.id, eventId), isNull(paymentEvents.recoveredAt)))
     .returning({ id: paymentEvents.id });
   return updated.length === 0;
+}
+
+/**
+ * A success we could not match to any open failure.
+ *
+ * Webhooks are not ordered, so a `payment.captured` can genuinely arrive before
+ * the `payment.failed` it resolves. Dropping it would push the CONTROL arm's
+ * recovery rate down — control recovers only through organic matches — and a
+ * depressed control rate inflates measured incrementality. Parking it costs one
+ * row and closes a hole that would otherwise quietly flatter the headline number.
+ */
+export async function parkUnmatchedRecovery(input: {
+  paymentId: string;
+  orderId: string | null;
+  subscriptionId?: string | null;
+  amountPaise: number;
+  at: Date;
+}): Promise<void> {
+  await db
+    .insert(unmatchedRecoveries)
+    .values({
+      paymentId: input.paymentId,
+      orderId: input.orderId,
+      subscriptionId: input.subscriptionId ?? null,
+      amountPaise: input.amountPaise,
+      occurredAt: input.at,
+    })
+    .onConflictDoNothing({ target: unmatchedRecoveries.paymentId });
+}
+
+/**
+ * Record a recovery, parking it if the failure has not arrived yet.
+ * The only entry point ingestion should use for a success.
+ */
+export async function recordOrganicRecovery(input: {
+  paymentId: string;
+  orderId: string | null;
+  amountPaise: number;
+  at: Date;
+}): Promise<RecoveryResult> {
+  const r = await recordPaymentCaptured(input.paymentId, input.orderId, input.amountPaise, input.at);
+  if (!r.eventId && input.orderId) {
+    await parkUnmatchedRecovery({ ...input });
+  }
+  return r;
+}
+
+/**
+ * Re-check parked successes against failures that have just landed.
+ *
+ * Called after an ingest batch inserts its at-risk rows, so an out-of-order
+ * delivery is resolved within the same request rather than never.
+ */
+export async function matchParkedRecoveries(orderIds: string[]): Promise<number> {
+  if (orderIds.length === 0) return 0;
+  const parked = await db
+    .select()
+    .from(unmatchedRecoveries)
+    .where(and(inArray(unmatchedRecoveries.orderId, orderIds), isNull(unmatchedRecoveries.matchedAt)));
+
+  let matched = 0;
+  for (const p of parked) {
+    const r = await recordPaymentCaptured(p.paymentId, p.orderId, p.amountPaise, p.occurredAt);
+    if (r.eventId) {
+      await db
+        .update(unmatchedRecoveries)
+        .set({ matchedAt: new Date() })
+        .where(eq(unmatchedRecoveries.paymentId, p.paymentId));
+      matched += 1;
+    }
+  }
+  return matched;
 }

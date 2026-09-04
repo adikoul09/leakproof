@@ -64,7 +64,7 @@ describe('systemic guards', () => {
   it('needs all three to pass', () => {
     // Rate clears both thresholds, but the sample is too small.
     assert.equal(testSystemic(window(5, 4), QUIET_BASELINE).passed, false);
-    // Big enough sample, but 20% is under the 0.25 absolute floor.
+    // Big enough sample, but 20% is under the 0.35 absolute floor.
     assert.equal(testSystemic(window(20, 4), QUIET_BASELINE).passed, false);
     // Both cleared.
     assert.equal(testSystemic(window(20, 12), QUIET_BASELINE).passed, true);

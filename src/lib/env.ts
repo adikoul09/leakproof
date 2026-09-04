@@ -22,6 +22,7 @@ export const optional = {
   razorpayWebhookSecret: () => process.env.RAZORPAY_WEBHOOK_SECRET || null,
   upstashUrl: () => process.env.UPSTASH_REDIS_REST_URL || null,
   resendApiKey: () => process.env.RESEND_API_KEY || null,
+  armSalt: () => process.env.ARM_ASSIGNMENT_SALT || null,
 } as const;
 
 export function required(name: string): string {

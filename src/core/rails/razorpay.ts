@@ -173,3 +173,44 @@ export async function listDowntimes(): Promise<Downtime[]> {
   const res = await call<{ items: Downtime[] }>('/payments/downtimes');
   return res.items ?? [];
 }
+
+export interface Order {
+  id: string;
+  amount: number;
+  currency: string;
+  receipt: string | null;
+  status: string;
+  attempts: number;
+  created_at: number;
+  notes?: Record<string, string>;
+}
+
+/**
+ * Create a real test-mode order.
+ *
+ * Used by `POST /api/simulator/push-to-razorpay` to ground a subset of the
+ * synthetic corpus in genuine Razorpay ids that resolve in the dashboard.
+ *
+ * What this does NOT do is manufacture a real decline. A payment is created by
+ * the checkout flow, not by this API — server-to-server payment creation needs
+ * separate account activation — so the failure payloads in a synthetic batch
+ * are modelled on Razorpay's documented error taxonomy rather than harvested
+ * from live declines. The README says so plainly; the alternative is a demo
+ * that implies more than it did.
+ */
+export async function createOrder(req: {
+  amountPaise: number;
+  currency: string;
+  receipt: string;
+  notes?: Record<string, string>;
+}): Promise<Order> {
+  return call<Order>('/orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      amount: req.amountPaise,
+      currency: req.currency,
+      receipt: req.receipt.slice(0, 40), // Razorpay caps receipt at 40 chars
+      ...(req.notes ? { notes: req.notes } : {}),
+    }),
+  });
+}

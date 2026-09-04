@@ -19,7 +19,9 @@
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "gate": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/gate-probe.ts",
     "validate:incrementality": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/validate-incrementality.ts",
-    "ledger:tamper": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/tamper-ledger.ts"
+    "ledger:tamper": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/tamper-ledger.ts",
+    "tune:triage": "tsx scripts/tune-triage.ts",
+    "simulate": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/simulate.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
