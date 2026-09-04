@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { classify, cohortDim, cohortKey, testSystemic } from './classifier';
 import { classifyRawError } from './taxonomy';
 import type { CohortBaseline, CohortWindow } from './cohort-store';
+import { TRIAGE } from './config';
 
 const QUIET_BASELINE: CohortBaseline = {
   mean: 0.08,
@@ -61,20 +62,28 @@ describe('taxonomy', () => {
 });
 
 describe('systemic guards', () => {
+  // Derived from the live constants rather than hardcoded. These thresholds
+  // are tuned and they move; a test that pins yesterday's numbers fails for
+  // the wrong reason and teaches everyone to edit tests when they retune.
+  const tooSmall = TRIAGE.minCohortN - 1;
+  const bigEnough = TRIAGE.minCohortN * 2;
+  const underFloor = Math.floor(bigEnough * (TRIAGE.absoluteFloor / 2));
+  const overFloor = Math.ceil(bigEnough * Math.min(0.95, TRIAGE.absoluteFloor + 0.25));
+
   it('needs all three to pass', () => {
     // Rate clears both thresholds, but the sample is too small.
-    assert.equal(testSystemic(window(5, 4), QUIET_BASELINE).passed, false);
-    // Big enough sample, but 20% is under the 0.35 absolute floor.
-    assert.equal(testSystemic(window(20, 4), QUIET_BASELINE).passed, false);
+    assert.equal(testSystemic(window(tooSmall, tooSmall), QUIET_BASELINE).passed, false);
+    // Big enough sample, but the rate is under the absolute floor.
+    assert.equal(testSystemic(window(bigEnough, underFloor), QUIET_BASELINE).passed, false);
     // Both cleared.
-    assert.equal(testSystemic(window(20, 12), QUIET_BASELINE).passed, true);
+    assert.equal(testSystemic(window(bigEnough, overFloor), QUIET_BASELINE).passed, true);
   });
 
   it('names the numbers it tested against, for the decision trace', () => {
-    const t = testSystemic(window(5, 4), QUIET_BASELINE);
+    const t = testSystemic(window(tooSmall, tooSmall), QUIET_BASELINE);
     const guard = t.checks.find((c) => c.rule === 'min_cohort_n');
-    assert.equal(guard?.expected, '>= 8');
-    assert.equal(guard?.actual, '5');
+    assert.equal(guard?.expected, `>= ${TRIAGE.minCohortN}`);
+    assert.equal(guard?.actual, String(tooSmall));
   });
 
   it('refuses to call an outage when the baseline is already noisy', () => {

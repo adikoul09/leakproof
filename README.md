@@ -134,33 +134,47 @@ Each class carries a **flavour**: `customer` (this customer's card or balance),
 `infra`-flavoured failures can be promoted to systemic, and only if all three
 guards pass over a 15-minute rolling window:
 
-- `cohort_n ≥ 8` — small-sample guard
+- `cohort_n ≥ 16` — small-sample guard
 - `decline_rate > baseline + 3σ` (EWMA baseline, α = 0.3)
-- `decline_rate > 0.35` absolute floor
+- `decline_rate > 0.30` absolute floor
 
 Confidence is `logistic(z)` clipped to [0.5, 0.99].
 
-**These thresholds are tuned, not guessed.** `npm run tune:triage` replays six
-seeded corpora — 1,165 ground-truth systemic events — through the real
-classifier and the real cohort store, sweeps 360 configurations, and exits
-non-zero if the deployed one misses the blueprint's bar of 0.8 precision and 0.8
-recall:
+**These thresholds are tuned, not guessed — and tuned across volumes.**
+`npm run tune:triage` replays four scenarios through the real classifier and the
+real cohort store, sweeps 360 configurations, scores each at its **worst**
+scenario, and exits non-zero if the deployed one misses the blueprint's bar of
+0.8 precision and 0.8 recall anywhere:
 
 ```
-precision 94.6%   recall 93.6%   1.69 false alarms per 1,000 failures
-detection lag 346s on the degraded cohort
+demo   3k failures/day, 45-min outage    P 94.2%  R 89.0%   lag 234s
+busy   6k failures/day, 90-min outage    P 96.6%  R 93.9%   lag 278s
+brief  3k failures/day, 20-min outage    P 84.7%  R 81.3%   lag 326s  ← binds
+dense  4k failures/6h,  180-min outage   P 99.3%  R 97.4%   lag 250s
 ```
 
-Two things the tuning turned up, both stated rather than buried:
+On the live 3,049-event demo batch, end to end through the real pipeline:
+**precision 83.3%, recall 92.1%**, scoring 100% of the planted ground truth.
 
-- **The floor was wrong.** At the blueprint's 0.25 the detector scored 77.4%
-  precision — it missed the bar by firing on small-sample noise. Raising it to
-  0.35 cut false alarms 5× for 3 minutes of extra detection lag. Precision is
-  the expensive side here: a false systemic call parks a *recoverable* payment
-  behind the circuit breaker, so being over-eager loses revenue quietly.
+Three things the tuning turned up, all stated rather than buried:
+
+- **A single-volume sweep is not tuning.** The first pass tuned at 6k
+  failures/day and scored 94.6%; the same thresholds scored 78% on the
+  3,000-failure preset the product actually ships, because a thinner corpus
+  means smaller cohorts and more small-sample false alarms. The binding case
+  turned out to be a *brief* outage in a thin corpus — the most ordinary thing
+  that happens to a gateway — and it was not in the original tuning set.
+  FAILURES.md #22.
+- **Raising the guard and lowering the floor beat doing either alone.** With
+  `minCohortN` at 16 carrying the noise problem, the floor no longer has to, and
+  the recall a high floor was costing on brief outages comes back. Detection got
+  *faster* too.
 - **It is really two guards, not three.** Under the seeded prior the σ threshold
-  is 0.23, below the 0.35 floor, so the floor always binds first and the σ test
+  is 0.23, below the 0.30 floor, so the floor always binds first and the σ test
   never changes an outcome. The tuner prints this every run.
+
+Validated between roughly 3,000 and 6,000 failures/day. Below that it is
+unvalidated and `minCohortN` is the first thing to lower.
 
 And one thing that got measured and then *not* built: advancing the EWMA
 baseline from closed 5-minute buckets — the maintenance the blueprint assigns to

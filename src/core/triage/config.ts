@@ -1,14 +1,23 @@
 /**
  * Tunable constants for systemic-failure detection (blueprint 6.5).
  *
- * TUNED — `npm run tune:triage`, 6 seeds × ~6,250 failures, 90-minute HDFC/card
- * outage at 62% decline, 1,165 ground-truth systemic events. Re-run it after
- * changing anything here; it exits non-zero if the bar is missed.
+ * TUNED — `npm run tune:triage`, across FOUR volume scenarios, 3 seeds each.
+ * Re-run it after changing anything here; it exits non-zero if the bar is
+ * missed on any scenario.
  *
- *   precision 94.6%   recall 93.6%   1.69 false alarms per 1,000 failures
- *   detection lag 346s on the degraded cohort
+ *   demo   3k failures/day, 45-min outage    P 94.2%  R 89.0%   lag 234s
+ *   busy   6k failures/day, 90-min outage    P 96.6%  R 93.9%   lag 278s
+ *   brief  3k failures/day, 20-min outage    P 84.7%  R 81.3%   lag 326s  ← binds
+ *   dense  4k failures/6h,  180-min outage   P 99.3%  R 97.4%   lag 250s
  *
- * The bar, from the blueprint: precision AND recall both clear 0.8.
+ * The bar, from the blueprint: precision AND recall both clear 0.8 — and here,
+ * on EVERY scenario, scored at the worst one rather than the average.
+ *
+ * The first pass tuned at a single volume (6k/day, 90-minute outage) and picked
+ * numbers that scored 94.6% there and 78% on the 3,000-failure demo preset the
+ * product actually ships. A thinner corpus means smaller cohorts and more
+ * small-sample false alarms, so a configuration that only works at the density
+ * it was tuned on is overfitted. FAILURES.md #22.
  *
  * Two findings from the sweep are recorded below where they bite, and both are
  * in FAILURES.md: the sigma guard is inert at these settings, and advancing the
@@ -23,15 +32,20 @@ export const TRIAGE = {
   /**
    * Guard against small-sample noise. Below this, never call systemic.
    *
-   * The sweep says raising this to 24 buys the best F1 of any configuration
-   * (0.961). It is deliberately NOT taken. A minCohortN of 24 means a cohort
-   * needs 24 attempts inside a 15-minute window before it can be judged at
-   * all, which no cohort at a merchant quieter than this corpus ever reaches —
-   * the detector would score beautifully here and be permanently blind in
-   * production. The floor below is the honest knob; this one buys precision by
-   * declining to look.
+   * 8 → 16 after tuning across volumes. At 8 the detector scored 64.8%
+   * precision on a brief outage in a thin corpus: with a 15-minute window on a
+   * 3,000-failure day, a cohort of 8 attempts throws a false alarm whenever
+   * three of them happen to fail together, which at a 13% base rate is not rare.
+   *
+   * This was resisted on the first pass, on the argument that a high threshold
+   * makes the detector blind at any merchant quieter than the tuning corpus.
+   * That argument was right and is why it stops at 16 rather than the 24 the
+   * single-volume sweep preferred — but it was being made against a corpus that
+   * was never thin, so it was untested. 16 now clears the bar at 3,000
+   * failures/day, measured. Below roughly 3,000/day it is unvalidated and the
+   * first thing to lower.
    */
-  minCohortN: 8,
+  minCohortN: 16,
   /**
    * Decline rate must exceed baseline + sigmaMultiplier × σ (EWMA baseline).
    *
@@ -46,15 +60,18 @@ export const TRIAGE = {
   /**
    * ...and clear this absolute floor, regardless of how quiet the baseline is.
    *
-   * 0.25 → 0.35 after tuning. At 0.25 the detector scored precision 77.4% /
-   * recall 96.7% — it missed the bar by firing on small-sample noise, 9 false
-   * alarms per 1,000 failures. A false systemic call parks a recoverable
-   * payment behind the circuit breaker, so on this product a false positive
-   * costs real revenue by declining to act, which makes precision the more
-   * expensive side to be wrong on. 0.35 gives 94.6% / 93.6% at 1.7 false
-   * alarms per 1,000. The price is detection lag: 153s → 346s.
+   * 0.25 → 0.35 → 0.30. The floor rose to 0.35 when it was carrying the whole
+   * small-sample problem alone; with minCohortN now at 16 doing that job, 0.30
+   * gives back the recall a higher floor was costing on brief outages — 76% to
+   * 81% on the thin-corpus scenario that binds.
+   *
+   * A false systemic call parks a recoverable payment behind the circuit
+   * breaker, so on this product a false positive costs real revenue by
+   * declining to act; precision is the more expensive side to be wrong on. The
+   * pair (16, 0.30) is the cheapest way to get both sides above the bar on
+   * every scenario rather than on average.
    */
-  absoluteFloor: 0.35,
+  absoluteFloor: 0.3,
   /** EWMA smoothing factor for the baseline decline rate. */
   ewmaAlpha: 0.3,
   /**

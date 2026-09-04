@@ -949,6 +949,82 @@ silently attributes a code change to a policy change is worse than no screen.
 
 ---
 
+## 22. The detector was tuned at one volume and did not survive the volume it ships at
+
+**When:** Milestone 8, immediately after fixing #20 and re-running the numbers
+for real.
+
+Fixing the cohort window changed what the detector sees, so the classifications
+already in the table were stale. Re-running them over the demo batch — 3,049
+events, 100% of ground truth scored for the first time — gave:
+
+```
+precision 73.8%   recall 81.6%
+```
+
+**Precision below the bar**, on a detector I had reported at 94.6% one milestone
+earlier. The earlier number was partly #20 flattering it, but not entirely.
+
+The tuner still said 94.6%. Both could not be right, so I ran the tuner at the
+demo preset's actual parameters — 3,000 failures a day, a 45-minute outage —
+instead of the ones it had been using:
+
+```
+tuned at   6,000 failures/day, 90-minute outage   P 94.6%  R 93.6%
+shipped at 3,000 failures/day, 45-minute outage   P 78.0%  R 86.8%
+```
+
+**I tuned on a corpus with roughly four times the systemic signal of the one the
+product actually generates.** A thinner corpus means smaller cohorts, and a
+cohort of 8 attempts throws a false alarm whenever three of them happen to fail
+together — which at a 13% base rate is not rare at all.
+
+The irony is exact. In milestone 6 I explicitly refused to raise `minCohortN` to
+24, on the argument that it "would score beautifully here and be permanently
+blind in production". That argument was right. I then made its mirror image:
+kept `minCohortN` low and tuned everything else against a corpus that was never
+thin, so the low threshold was never actually tested where it hurts.
+
+**Fix, in the harness first.** `npm run tune:triage` now sweeps four scenarios —
+3k/day with a 45-minute outage, 6k/day with 90, 3k/day with a *20*-minute
+outage, and a dense 6-hour window — and scores a configuration at its **worst**
+scenario, not its average. Averaging would let a strong result at high volume
+paper over a failure at the volume the demo runs at, which is the exact mistake
+being fixed.
+
+That immediately exposed which case actually binds, and it is not the one I had
+been tuning against:
+
+```
+                              n≥8, floor 0.35        n≥16, floor 0.30
+demo   3k/day, 45m outage     P 80.3%  R 86.3%  ✓    P 94.2%  R 89.0%  ✓
+busy   6k/day, 90m outage     P 94.6%  R 92.9%  ✓    P 96.6%  R 93.9%  ✓
+brief  3k/day, 20m outage     P 64.8%  R 76.0%  ✗    P 84.7%  R 81.3%  ✓
+dense  4k/6h,  180m outage    P 99.0%  R 97.0%  ✓    P 99.3%  R 97.4%  ✓
+```
+
+A brief outage in a thin corpus is the hard case, and it is also the most
+ordinary thing that happens to a payment gateway. It was not in the tuning set.
+
+**Shipped: `minCohortN 16, absoluteFloor 0.30`.** Raising the small-sample guard
+and *lowering* the floor beats doing either alone — with `minCohortN` carrying
+the noise problem, the floor no longer has to, and the recall a high floor was
+costing on brief outages comes back. Detection lag improved too, 349–401s down
+to 234–326s, because a lower floor trips sooner.
+
+On the live 3,049-event batch, re-classified: **precision 83.3%, recall 92.1%**,
+scoring 100% of ground truth rather than the 94.7% the half-drained run managed.
+
+The threshold is validated between roughly 3,000 and 6,000 failures a day.
+Below that it is unvalidated and `minCohortN` is the first thing to lower —
+stated here rather than discovered by someone with quieter traffic.
+
+`classifier.test.ts` no longer hardcodes `>= 8`; it derives its fixtures from
+`TRIAGE`, because a test that pins yesterday's tuned constants fails for the
+wrong reason and teaches everyone to edit tests when they retune.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

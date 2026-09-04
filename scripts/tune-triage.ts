@@ -11,11 +11,17 @@
  *
  * Method
  * ------
- * 1. Generate corpora with an injected issuer outage. Ground truth is per
- *    event and comes from the failure payload the generator planted, not from
- *    membership of the window: an insufficient-funds decline that happens to
- *    land mid-outage is idiosyncratic, and counting it as systemic would hand
- *    the detector precision it did not earn.
+ * 1. Generate corpora with an injected issuer outage, ACROSS SEVERAL VOLUMES.
+ *    Tuning at a single volume is how the first pass went wrong: thresholds
+ *    picked against 6,000 failures a day and a 90-minute outage scored 94.6%
+ *    precision there and 78% on the 3,000-failure demo preset, because a
+ *    thinner corpus means smaller cohorts and more small-sample false alarms.
+ *    A configuration that only works at the density it was tuned on is
+ *    overfitted, and the bar has to be cleared at the worst scenario, not the
+ *    average. Ground truth is per event and comes from the failure payload the
+ *    generator planted, not from membership of the window: an insufficient-funds
+ *    decline that happens to land mid-outage is idiosyncratic, and counting it
+ *    as systemic would hand the detector precision it did not earn.
  * 2. Replay each corpus in timestamp order through the real `MemoryCohortStore`
  *    and the real `classify()`. No re-implementation — a harness that reimplements
  *    the thing it is tuning measures the harness.
@@ -203,56 +209,90 @@ function score(samples: Sample[], thresholds: SystemicThresholds, outageStart: n
 
 const pctf = (x: number) => `${(x * 100).toFixed(1)}%`;
 
+interface Scenario {
+  name: string;
+  count: number;
+  durationMin: number;
+  spikePct: number;
+  windowHours: number;
+}
+
+/**
+ * The conditions the detector actually has to work under. The demo preset is
+ * the thin end and the stress preset the thick end; a configuration has to
+ * clear the bar on ALL of them, because "works at high volume" is not a
+ * property anyone can rely on.
+ */
+const SCENARIOS: Scenario[] = [
+  { name: 'demo (3k/day, 45m outage)', count: 3000, durationMin: 45, spikePct: 62, windowHours: 24 },
+  { name: 'busy (6k/day, 90m outage)', count: 6000, durationMin: 90, spikePct: 62, windowHours: 24 },
+  { name: 'brief (3k/day, 20m outage)', count: 3000, durationMin: 20, spikePct: 70, windowHours: 24 },
+  { name: 'dense (4k/6h, 180m outage)', count: 4000, durationMin: 180, spikePct: 78, windowHours: 6 },
+];
+
 async function main() {
-  const SEEDS = arg('seeds', 6);
-  const COUNT = arg('count', 6000);
-  const DURATION = arg('duration', 90);
+  const SEEDS = arg('seeds', 3);
   const SPIKE = arg('spike', 62);
   const ISSUER = 'HDFC';
   const METHOD: Method = 'card';
+  const only = process.argv.indexOf('--scenario');
+  const scenarios = only === -1 ? SCENARIOS : SCENARIOS.filter((s) => s.name.includes(process.argv[only + 1]));
 
   console.log('\ntuning the systemic detector against an injected issuer outage');
-  console.log(`  corpora        : ${SEEDS} seeds × ${COUNT} baseline failures`);
-  console.log(`  injected outage: ${ISSUER}/${METHOD}, ${DURATION} min at ${SPIKE}% decline`);
-  console.log(`  bar            : precision ≥ 0.80 AND recall ≥ 0.80\n`);
+  console.log(`  scenarios      : ${scenarios.length}, ${SEEDS} seeds each`);
+  for (const s of scenarios) console.log(`                   ${s.name}`);
+  console.log(`  bar            : precision ≥ 0.80 AND recall ≥ 0.80 on EVERY scenario\n`);
+  void SPIKE;
 
   // Replay every corpus once per baseline mode, then score thresholds off the cache.
-  const cache: Record<BaselineMode, Array<{ samples: Sample[]; outageStart: number }>> = {
-    seeded: [],
-    adaptive: [],
-  };
+  type Cached = { samples: Sample[]; outageStart: number };
+  const cache: Record<string, Record<BaselineMode, Cached[]>> = {};
   let truthTotal = 0;
 
-  for (let s = 0; s < SEEDS; s += 1) {
-    const seed = 20260900 + s * 7717;
-    const batch = generateBatch({
-      count: COUNT,
-      seed,
-      windowHours: 24,
-      endsAt: new Date('2026-09-04T18:30:00+05:30'),
-      injectOutage: { issuer: ISSUER, method: METHOD, durationMin: DURATION, spikePct: SPIKE },
-      organicRecoveryRate: 0.11,
-      adversarialPct: 0.05,
-      paydayStrength: 0.8,
-    });
-    const truth = new Set(batch.groundTruth.systemicEventIds);
-    truthTotal += truth.size;
-    const outageStart = Date.parse(batch.groundTruth.outage!.startedAt);
-    for (const mode of ['seeded', 'adaptive'] as BaselineMode[]) {
-      cache[mode].push({ samples: replay(batch.events, truth, batch.groundTruth.outage, mode), outageStart });
+  for (const sc of scenarios) {
+    cache[sc.name] = { seeded: [], adaptive: [] };
+    let scenarioTruth = 0;
+    for (let s = 0; s < SEEDS; s += 1) {
+      const seed = 20260900 + s * 7717;
+      const batch = generateBatch({
+        count: sc.count,
+        seed,
+        windowHours: sc.windowHours,
+        endsAt: new Date('2026-09-04T18:30:00+05:30'),
+        injectOutage: {
+          issuer: ISSUER,
+          method: METHOD,
+          durationMin: sc.durationMin,
+          spikePct: sc.spikePct,
+        },
+        organicRecoveryRate: 0.11,
+        adversarialPct: 0.05,
+        paydayStrength: 0.8,
+      });
+      const truth = new Set(batch.groundTruth.systemicEventIds);
+      truthTotal += truth.size;
+      scenarioTruth += truth.size;
+      const outageStart = Date.parse(batch.groundTruth.outage!.startedAt);
+      for (const mode of ['seeded', 'adaptive'] as BaselineMode[]) {
+        cache[sc.name][mode].push({
+          samples: replay(batch.events, truth, batch.groundTruth.outage, mode),
+          outageStart,
+        });
+      }
     }
-    process.stdout.write(`  seed ${seed}: ${batch.summary.failed} failures, ${truth.size} truly systemic\n`);
+    console.log(`  ${sc.name.padEnd(28)} ${scenarioTruth} truly systemic events`);
   }
 
-  console.log(`\n  ${truthTotal} systemic events across all corpora`);
+  console.log(`\n  ${truthTotal} systemic events across all scenarios`);
 
-  const aggregate = (mode: BaselineMode, t: SystemicThresholds): Score => {
+  /** Score one scenario. */
+  const scoreScenario = (name: string, mode: BaselineMode, t: SystemicThresholds): Score => {
     let tp = 0;
     let fp = 0;
     let fn = 0;
     let fpOutside = 0;
     const lags: number[] = [];
-    for (const c of cache[mode]) {
+    for (const c of cache[name][mode]) {
       const r = score(c.samples, t, c.outageStart);
       tp += r.tp;
       fp += r.fp;
@@ -271,6 +311,26 @@ async function main() {
       f1: precision + recall === 0 ? 0 : (2 * precision * recall) / (precision + recall),
       detectionLagS: lags.length === 0 ? null : Math.round(lags.reduce((a, b) => a + b, 0) / lags.length),
       fpOutsideWindow: fpOutside,
+    };
+  };
+
+  /**
+   * The score that decides. A configuration is only as good as its WORST
+   * scenario — averaging would let a strong result at high volume paper over a
+   * failure at the volume the demo actually runs at, which is precisely the
+   * mistake this harness now exists to prevent.
+   */
+  const aggregate = (mode: BaselineMode, t: SystemicThresholds): Score => {
+    const per = scenarios.map((sc) => scoreScenario(sc.name, mode, t));
+    let worst = per[0];
+    for (const p of per) {
+      if (Math.min(p.precision, p.recall) < Math.min(worst.precision, worst.recall)) worst = p;
+    }
+    return {
+      ...worst,
+      tp: per.reduce((a, p) => a + p.tp, 0),
+      fp: per.reduce((a, p) => a + p.fp, 0),
+      fn: per.reduce((a, p) => a + p.fn, 0),
     };
   };
 
@@ -330,7 +390,10 @@ async function main() {
     const best = results
       .filter((x) => x.mode === 'seeded' && x.t.minCohortN === n)
       .sort((a, b) => b.r.f1 - a.r.f1)[0];
-    const totalFailures = cache.seeded.reduce((acc, c) => acc + c.samples.length, 0);
+    const totalFailures = scenarios.reduce(
+      (acc, sc) => acc + cache[sc.name].seeded.reduce((a, c) => a + c.samples.length, 0),
+      0,
+    );
     console.log(
       `  n≥${String(n).padStart(2)}  ${String(best.t.sigmaMultiplier).padStart(3)}σ floor ${best.t.absoluteFloor.toFixed(2)}` +
         `  P ${pctf(best.r.precision).padStart(6)}  R ${pctf(best.r.recall).padStart(6)}  F1 ${best.r.f1.toFixed(3)}` +
@@ -344,7 +407,10 @@ async function main() {
   // makes the detector blind at any merchant smaller than this corpus — a bad
   // trade to make silently. The floor is the honest knob.
   console.log(`\n── holding minCohortN at ${DEFAULT_THRESHOLDS.minCohortN}, varying the floor (seeded) ──`);
-  const totalFailures = cache.seeded.reduce((acc, c) => acc + c.samples.length, 0);
+  const totalFailures = scenarios.reduce(
+    (acc, sc) => acc + cache[sc.name].seeded.reduce((a, c) => a + c.samples.length, 0),
+    0,
+  );
   for (const floor of FLOOR_GRID) {
     const r = aggregate('seeded', {
       minCohortN: DEFAULT_THRESHOLDS.minCohortN,
@@ -374,6 +440,15 @@ async function main() {
         `${(0.08 + DEFAULT_THRESHOLDS.sigmaMultiplier * 0.05).toFixed(2)}, below the ` +
         `${DEFAULT_THRESHOLDS.absoluteFloor} floor, so the floor always binds first.\n` +
         `    The systemic test is effectively two guards, not three.`,
+    );
+  }
+
+  console.log('\n── the deployed configuration, per scenario ──');
+  for (const sc of scenarios) {
+    const r = scoreScenario(sc.name, 'seeded', DEFAULT_THRESHOLDS);
+    const ok = r.precision >= 0.8 && r.recall >= 0.8 ? '✓' : '✗';
+    console.log(
+      `  ${ok} ${sc.name.padEnd(28)} P ${pctf(r.precision).padStart(6)}  R ${pctf(r.recall).padStart(6)}  F1 ${r.f1.toFixed(3)}  lag ${String(r.detectionLagS ?? '—').padStart(4)}s`,
     );
   }
 
