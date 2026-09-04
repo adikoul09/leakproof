@@ -21,15 +21,22 @@ import { buildPolicyContext } from '@/core/policy/context';
 import { evaluatePolicy } from '@/core/policy/evaluate';
 import { parsePolicy } from '@/core/policy/schema';
 import { getLivePolicy } from '@/core/policy/store';
-import { effectiveChannel, renderTemplate } from '@/core/messaging/templates';
+import { effectiveChannel, renderTemplate, whatsappBlockers } from '@/core/messaging/templates';
+import { WhatsAppError, isWhatsappConfigured, sendTemplate } from '@/core/rails/whatsapp';
 import { RazorpayError, createPaymentLink } from '@/core/rails/razorpay';
 import { costOf, type CostItem } from '@/core/cost/meter';
 import type { Rail } from '@/core/routing/static-table';
 import { appendLedgerSafe } from '@/core/ledger/append';
-import { env, optional } from '@/lib/env';
+import { env } from '@/lib/env';
 import { inngest } from '@/lib/inngest';
 
 const MERCHANT_NAME = 'Kirana Cloud';
+/**
+ * A business-initiated WhatsApp conversation must use a pre-approved template;
+ * Meta rejects free text with error 131047. This name has to exist and be
+ * approved in the Business account before the rail can send.
+ */
+const WHATSAPP_TEMPLATE = process.env.WHATSAPP_TEMPLATE_NAME || 'payment_retry_link';
 /** Links outlive the contact window but not the customer's memory. */
 const LINK_TTL_HOURS = 72;
 
@@ -174,9 +181,18 @@ export const recoveryExecute = inngest.createFunction(
     // WhatsApp has no delivery path until Meta Cloud API credentials exist, and
     // a rail that notifies nobody while reporting `action_sent` is worse than
     // one that picks a channel it can actually reach. FAILURES.md #23.
-    const { channel, degradedFrom } = effectiveChannel(
+    /**
+     * A raw phone number is not stored anywhere in this system — `customers`
+     * holds a sha256 and a display mask. Razorpay notifies on our behalf for
+     * sms and email, which is precisely why those rails need no PII. WhatsApp
+     * has no such arrangement, so DEMO_RECIPIENT_PHONE is the only number this
+     * process can legitimately send to.
+     */
+    const demoPhone = process.env.DEMO_RECIPIENT_PHONE || null;
+    const { channel, degradedFrom, why } = effectiveChannel(
       rail,
-      optional.whatsappToken() !== null && optional.whatsappPhoneNumberId() !== null,
+      isWhatsappConfigured(),
+      demoPhone !== null,
     );
 
     const link = await step.run('create-payment-link', async () => {
@@ -235,6 +251,31 @@ export const recoveryExecute = inngest.createFunction(
         .set({ executedAt: new Date(), razorpayLinkId: link.id, costPaise: cost })
         .where(eq(recoveryAttempts.id, attemptId));
 
+      /**
+       * Every other rail is delivered by Razorpay's own notification on the
+       * payment link. WhatsApp is not one of Razorpay's channels, so this is
+       * the only rail that sends anything itself.
+       */
+      let whatsappMessageId: string | null = null;
+      if (channel === 'whatsapp' && demoPhone) {
+        try {
+          const sent = await sendTemplate({
+            to: demoPhone,
+            templateName: WHATSAPP_TEMPLATE,
+            variables: [MERCHANT_NAME, `₹${(snapshot.pe.amountPaise / 100).toFixed(0)}`],
+            urlButtonSuffix: link.short_url.replace(/^https?:\/\//, ''),
+          });
+          whatsappMessageId = sent.messageId;
+        } catch (err) {
+          const e = err as WhatsAppError;
+          // A send we could not make is not a contact. Recording it as one
+          // would convert a treated event into an untreated one and bias the
+          // incrementality result — the same trap as FAILURES.md #23.
+          if (e.retriable) throw err;
+          throw new NonRetriableError(`WhatsApp refused the send: ${e.code} ${e.message}`);
+        }
+      }
+
       await db.insert(messages).values({
         attemptId,
         channel,
@@ -246,6 +287,7 @@ export const recoveryExecute = inngest.createFunction(
         usedFallback: true,
         sentAt: new Date(),
         costPaise: costOf(costItem),
+        providerMessageId: whatsappMessageId,
       });
 
       await setEventState(eventId, 'action_sent');
@@ -263,7 +305,8 @@ export const recoveryExecute = inngest.createFunction(
             rail,
             intended_channel: degradedFrom,
             actual_channel: channel,
-            why: 'WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID are not configured',
+            why: why ?? 'unknown',
+            blockers: whatsappBlockers(isWhatsappConfigured(), demoPhone !== null),
           },
         }),
       );

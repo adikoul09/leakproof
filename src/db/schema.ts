@@ -232,6 +232,12 @@ export const messages = pgTable('messages', {
     .notNull()
     .references(() => recoveryAttempts.id),
   channel: text('channel').notNull(), // whatsapp|email|sms|voice
+  /**
+   * The sending provider's own id, when we did the sending. NULL for every rail
+   * Razorpay notifies on our behalf — which is all of them except WhatsApp.
+   * Needed to reconcile a delivery receipt back to the attempt.
+   */
+  providerMessageId: text('provider_message_id'),
   language: text('language').notNull().default('en'), // en|hi|hinglish
   body: text('body').notNull(),
   llmModel: text('llm_model'),

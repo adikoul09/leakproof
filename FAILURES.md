@@ -1143,6 +1143,63 @@ over.
 
 ---
 
+## 25. WhatsApp cannot send, and the second reason is architectural
+
+**When:** Executing the WhatsApp timebox after the audit.
+
+Two blockers, and only the first is the one anybody expects.
+
+**Clerical:** `WHATSAPP_TOKEN` and `WHATSAPP_PHONE_NUMBER_ID` are unset. That
+needs a Meta Business account, a verified sender number, and a business-initiated
+template approved by Meta — a WhatsApp conversation started by the business
+outside the 24-hour service window must use one, or Graph rejects it with error
+131047. Payment recovery is business-initiated by definition: the customer's
+last action was a failed payment, not a message to us.
+
+**Architectural, and more interesting:** *this system has nowhere to send to.*
+
+Every other rail is delivered by Razorpay's own notification on the payment
+link — `notify: {sms, email}`. **Razorpay** holds the customer's contact
+details, which is exactly why LEAKPROOF never has to. `customers` stores
+`phone_hash` (sha256) and `phone_masked` (`+91••4821`) and nothing else. Raw PII
+is never written, anywhere, on purpose.
+
+Meta's Cloud API has no such arrangement. Sending a WhatsApp message means
+holding an E.164 number, which means storing raw contact details for every
+at-risk customer in the system. **That is a privacy decision, not a
+configuration one**, and it is not one to make quietly at 11pm the night before
+a demo because a rail in a routing table asked for it.
+
+So the timebox produced: the client, written and tested — template sends,
+three-way error classification, phone normalisation that refuses a number it
+cannot parse rather than mangling it, and a health probe that reads the sender's
+own metadata (the cheapest authenticated call that proves token and number id
+agree, and messages nobody). Wired into `recovery.execute` behind
+`effectiveChannel`, which now returns *both* blockers separately and in words:
+
+```
+whatsapp_nudge resolves to: sms · degraded from: whatsapp
+reason: WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID are not configured
+blockers:
+  - Meta Business credentials: token, phone number id, verified sender,
+    approved business-initiated template.
+  - A deliverable phone number. This system stores only sha256 hashes and
+    display masks; Razorpay holds the real contact and notifies on our behalf,
+    which is why the other rails need no PII. WhatsApp would require storing
+    raw numbers — a privacy decision, not a configuration one.
+```
+
+`whatsappBlockers()` returns them as two separate strings and a test asserts
+both are named, precisely so the architectural one cannot be mistaken for the
+clerical one when someone reads "WhatsApp isn't set up" and assumes an
+afternoon's work.
+
+When credentials arrive, one boolean flips and the rail sends — but only for
+customers whose numbers we have chosen to store, and that choice has to be made
+deliberately first.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

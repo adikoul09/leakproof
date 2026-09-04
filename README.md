@@ -832,6 +832,15 @@ Stated up front rather than discovered by a judge. Full detail in
   corpus, one seed's planted ₹8,97,066 came back as a ₹2,37,201 point estimate,
   while the *rate* lift was accurate to within a percentage point. Lead with the
   rate; read the interval, not the point. FAILURES.md #14.
+- **WhatsApp is written but cannot send, for two separate reasons.** The Meta
+  Cloud API client exists and is tested; credentials are unset (Business
+  account, verified sender, approved template). The second blocker is
+  architectural: every other rail is delivered by Razorpay's own `notify` flag,
+  so **Razorpay** holds the customer's contact and this system stores only a
+  sha256 and a display mask. Sending via Meta would require storing raw phone
+  numbers for every at-risk customer — a privacy decision, not a configuration
+  one. The rail degrades to SMS and records why, with both blockers named
+  separately. FAILURES.md #25.
 - **No Hinglish voice rail** (`FEATURE_VOICE=false`); **subscriptions, not
   invoices**, as the second surface.
 - **`subscription.charged` is handled in code but must be registered on the

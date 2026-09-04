@@ -99,14 +99,71 @@ export const RAIL_CHANNEL: Record<string, Channel> = {
  * Until a WhatsApp provider exists, those fall back to SMS: the same phone
  * number, a channel that actually delivers, recorded honestly as `sms` so the
  * cost meter and the Decision Trace both say what really happened.
+ *
+ * The client itself is written and tested (`core/rails/whatsapp.ts`); what is
+ * missing is a Meta Business account, a verified number and an approved
+ * template, none of which can be created from inside this repo. When those
+ * land, `whatsappConfigured` flips to true and this returns 'whatsapp'.
  */
 export function effectiveChannel(
   rail: string,
   whatsappConfigured: boolean,
-): { channel: Channel; degradedFrom: Channel | null } {
+  /**
+   * Whether a raw phone number is available to send TO. Separate from
+   * `whatsappConfigured` because they fail for different reasons and the
+   * distinction is the interesting one — see `whatsappBlockers`.
+   */
+  hasDeliverablePhone = false,
+): { channel: Channel; degradedFrom: Channel | null; why: string | null } {
   const intended = RAIL_CHANNEL[rail] ?? 'email';
-  if (intended === 'whatsapp' && !whatsappConfigured) {
-    return { channel: 'sms', degradedFrom: 'whatsapp' };
+  if (intended !== 'whatsapp') return { channel: intended, degradedFrom: null, why: null };
+
+  if (!whatsappConfigured) {
+    return {
+      channel: 'sms',
+      degradedFrom: 'whatsapp',
+      why: 'WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID are not configured',
+    };
   }
-  return { channel: intended, degradedFrom: null };
+  if (!hasDeliverablePhone) {
+    return {
+      channel: 'sms',
+      degradedFrom: 'whatsapp',
+      why: 'no raw phone number is stored for this customer; only a hash and a display mask',
+    };
+  }
+  return { channel: 'whatsapp', degradedFrom: null, why: null };
+}
+
+/**
+ * Everything standing between this rail and a real WhatsApp send.
+ *
+ * The second one is the interesting blocker and it is architectural, not
+ * clerical. Delivery on every other rail is Razorpay's own `notify` flag:
+ * *Razorpay* holds the customer's contact details, so this system never has to.
+ * `customers` stores `phone_hash` and `phone_masked` and nothing else, on
+ * purpose — raw PII is never written.
+ *
+ * Meta's Cloud API has no such arrangement. Sending a WhatsApp message means
+ * holding an E.164 number, which means storing raw contact details for every
+ * at-risk customer. That is a real privacy trade, not an oversight, and it is
+ * not one to make quietly at 11pm before a demo. Stated here so the decision is
+ * visible rather than implied by a column appearing in a migration.
+ */
+export function whatsappBlockers(
+  whatsappConfigured: boolean,
+  hasDeliverablePhone: boolean,
+): string[] {
+  const blockers: string[] = [];
+  if (!whatsappConfigured) {
+    blockers.push(
+      'Meta Business credentials: WHATSAPP_TOKEN + WHATSAPP_PHONE_NUMBER_ID, a verified sender number, and an approved business-initiated template.',
+    );
+  }
+  if (!hasDeliverablePhone) {
+    blockers.push(
+      'A deliverable phone number. This system stores only sha256 hashes and display masks; Razorpay holds the real contact and notifies on our behalf, which is why the other rails need no PII. WhatsApp would require storing raw numbers — a privacy decision, not a configuration one.',
+    );
+  }
+  return blockers;
 }
