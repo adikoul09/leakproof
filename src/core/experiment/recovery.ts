@@ -19,17 +19,8 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { paymentEvents, recoveryAttempts, unmatchedRecoveries } from '@/db/schema';
+import { OPEN_STATES } from '@/core/events/state';
 
-/** States that still count as recoverable. A lost or stopped event is closed. */
-const OPEN_STATES = [
-  'at_risk',
-  'classifying',
-  'planned',
-  'waiting_out_outage',
-  'deferred',
-  'blocked_by_policy',
-  'action_sent',
-] as const;
 
 export interface RecoveryResult {
   eventId: string | null;

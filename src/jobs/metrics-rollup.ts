@@ -29,8 +29,9 @@ export const metricsRollup = inngest.createFunction(
         .select({
           arm: armAssignments.arm,
           nEvents: raw<number>`count(*)::int`,
-          nRecovered: raw<number>`count(*) filter (where ${paymentEvents.state} = 'recovered')::int`,
-          grossPaise: raw<number>`coalesce(sum(${paymentEvents.recoveredPaise}) filter (where ${paymentEvents.state} = 'recovered'), 0)::bigint`,
+          // The timestamp, not the label — see loadArms and FAILURES.md #19.
+          nRecovered: raw<number>`count(*) filter (where ${paymentEvents.recoveredAt} is not null)::int`,
+          grossPaise: raw<number>`coalesce(sum(${paymentEvents.recoveredPaise}) filter (where ${paymentEvents.recoveredAt} is not null), 0)::bigint`,
         })
         .from(paymentEvents)
         .innerJoin(armAssignments, eq(armAssignments.eventId, paymentEvents.id))

@@ -677,6 +677,14 @@ Stated up front rather than discovered by a judge. Full detail in
   on a synthetic batch also arrives as *organic*, so the attributed/organic
   split reads 0% — the incrementality maths is unaffected, since it measures
   rupees rather than attribution.
+- **A recovery is recorded by timestamp, not by label.** Every metric keys off
+  `recovered_at`, never `state = 'recovered'`. `state` is written by four
+  different jobs and a recovery landing mid-pipeline used to have its label
+  overwritten by a stage that started earlier and finished later — which zeroed
+  the headline number *and* disarmed the `stop_on: payment_success` rule that
+  stops us chasing someone who has already paid. Terminal states are now
+  terminal (`setEventState`), and the metrics read the fact regardless.
+  FAILURES.md #19.
 - **The rupee point estimate is high-variance and the interval is not
   decoration.** Measured against a counterfactual ground truth on a heavy-tailed
   corpus, one seed's planted ₹8,97,066 came back as a ₹2,37,201 point estimate,

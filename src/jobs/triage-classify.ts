@@ -15,6 +15,7 @@ import { NonRetriableError } from 'inngest';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { classifications, paymentEvents } from '@/db/schema';
+import { setEventState } from '@/core/events/transition';
 import { classify, cohortDim, cohortKey } from '@/core/triage/classifier';
 import { postgresCohortStore } from '@/core/triage/cohort-store';
 import { appendLedgerSafe } from '@/core/ledger/append';
@@ -41,7 +42,7 @@ export const triageClassify = inngest.createFunction(
     const dim = cohortDim({ issuer: pe.issuer, method: pe.method, amountPaise: pe.amountPaise });
 
     await step.run('mark-classifying', () =>
-      db.update(paymentEvents).set({ state: 'classifying' }).where(eq(paymentEvents.id, eventId)),
+      setEventState(eventId, 'classifying'),
     );
 
     const { window, baseline } = await step.run('read-cohort', async () => ({
@@ -122,7 +123,7 @@ export const triageClassify = inngest.createFunction(
     // moves it on from here; a control-arm event stays here forever, which is
     // the honest description of a held-out event.
     await step.run('settle-state', () =>
-      db.update(paymentEvents).set({ state: 'at_risk' }).where(eq(paymentEvents.id, eventId)),
+      setEventState(eventId, 'at_risk'),
     );
 
     await step.sendEvent('announce', {

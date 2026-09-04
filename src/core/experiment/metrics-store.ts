@@ -41,7 +41,7 @@ export async function loadArms(w: MetricsWindow = {}): Promise<ArmsInput> {
       arm: armAssignments.arm,
       amountPaise: paymentEvents.amountPaise,
       recoveredPaise: paymentEvents.recoveredPaise,
-      state: paymentEvents.state,
+      recoveredAt: paymentEvents.recoveredAt,
     })
     .from(paymentEvents)
     .innerJoin(armAssignments, eq(armAssignments.eventId, paymentEvents.id))
@@ -69,7 +69,17 @@ export async function loadArms(w: MetricsWindow = {}): Promise<ArmsInput> {
   for (const r of rows) {
     out[r.arm].events.push({
       amountPaise: r.amountPaise,
-      recovered: r.state === 'recovered',
+      /**
+       * `recovered_at` is the fact; `state` is a label four different jobs
+       * write. When a recovery lands while triage is still in flight, the
+       * later job's state write used to erase the label while leaving the
+       * money — so the arm read zero recoveries and the headline number read
+       * zero rupees. `setEventState` now refuses to leave a terminal state,
+       * but the metrics read the timestamp regardless: the number that decides
+       * whether this project worked should not depend on a label winning a
+       * race. FAILURES.md #19.
+       */
+      recovered: r.recoveredAt !== null,
       recoveredPaise: r.recoveredPaise ?? 0,
     });
   }
@@ -151,8 +161,8 @@ export async function metricsTimeseries(
       bucket: raw<string>`to_char(date_bin(${`${bucketMinutes} minutes`}::interval, ${paymentEvents.failedAt}, timestamptz '2020-01-01'), 'YYYY-MM-DD"T"HH24:MI:SSOF')`,
       arm: armAssignments.arm,
       n: raw<number>`count(*)::int`,
-      recovered: raw<number>`count(*) filter (where ${paymentEvents.state} = 'recovered')::int`,
-      grossPaise: raw<number>`coalesce(sum(${paymentEvents.recoveredPaise}) filter (where ${paymentEvents.state} = 'recovered'), 0)::bigint`,
+      recovered: raw<number>`count(*) filter (where ${paymentEvents.recoveredAt} is not null)::int`,
+      grossPaise: raw<number>`coalesce(sum(${paymentEvents.recoveredPaise}) filter (where ${paymentEvents.recoveredAt} is not null), 0)::bigint`,
     })
     .from(paymentEvents)
     .innerJoin(armAssignments, eq(armAssignments.eventId, paymentEvents.id))

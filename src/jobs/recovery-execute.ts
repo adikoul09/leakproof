@@ -16,6 +16,7 @@ import { NonRetriableError } from 'inngest';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { armAssignments, customers, messages, paymentEvents, policyEvaluations, recoveryAttempts } from '@/db/schema';
+import { setEventState } from '@/core/events/transition';
 import { buildPolicyContext } from '@/core/policy/context';
 import { evaluatePolicy } from '@/core/policy/evaluate';
 import { parsePolicy } from '@/core/policy/schema';
@@ -149,10 +150,7 @@ export const recoveryExecute = inngest.createFunction(
           .update(recoveryAttempts)
           .set({ outcome: 'stopped', outcomeAt: new Date() })
           .where(eq(recoveryAttempts.id, attemptId));
-        await db
-          .update(paymentEvents)
-          .set({ state: 'blocked_by_policy' })
-          .where(eq(paymentEvents.id, eventId));
+        await setEventState(eventId, 'blocked_by_policy');
       });
       await step.run('ledger-blocked-at-execution', () =>
         appendLedgerSafe({
@@ -241,10 +239,7 @@ export const recoveryExecute = inngest.createFunction(
         costPaise: costOf(costItem),
       });
 
-      await db
-        .update(paymentEvents)
-        .set({ state: 'action_sent' })
-        .where(eq(paymentEvents.id, eventId));
+      await setEventState(eventId, 'action_sent');
     });
 
     await step.run('ledger-sent', () =>

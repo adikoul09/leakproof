@@ -14,6 +14,7 @@ import { NonRetriableError } from 'inngest';
 import { count, eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { classifications, paymentEvents, policyEvaluations, recoveryAttempts } from '@/db/schema';
+import { setEventState } from '@/core/events/transition';
 import { buildPolicyContext } from '@/core/policy/context';
 import { evaluatePolicy } from '@/core/policy/evaluate';
 import { parsePolicy } from '@/core/policy/schema';
@@ -118,7 +119,7 @@ export const recoveryPlan = inngest.createFunction(
           outcome: 'stopped',
           outcomeAt: new Date(),
         });
-        await db.update(paymentEvents).set({ state: 'lost' }).where(eq(paymentEvents.id, eventId));
+        await setEventState(eventId, 'lost');
       });
       await step.run('ledger-do-nothing', () =>
         appendLedgerSafe({
@@ -136,12 +137,7 @@ export const recoveryPlan = inngest.createFunction(
     }
 
     if (decision.result === 'block') {
-      await step.run('mark-blocked', () =>
-        db
-          .update(paymentEvents)
-          .set({ state: 'blocked_by_policy' })
-          .where(eq(paymentEvents.id, eventId)),
-      );
+      await step.run('mark-blocked', () => setEventState(eventId, 'blocked_by_policy'));
       await step.run('ledger-blocked', () =>
         appendLedgerSafe({
           eventId,
@@ -178,10 +174,7 @@ export const recoveryPlan = inngest.createFunction(
         })
         .returning({ id: recoveryAttempts.id });
 
-      await db
-        .update(paymentEvents)
-        .set({ state: decision.result === 'defer' ? 'deferred' : 'planned' })
-        .where(eq(paymentEvents.id, eventId));
+      await setEventState(eventId, decision.result === 'defer' ? 'deferred' : 'planned');
 
       return row.id;
     });

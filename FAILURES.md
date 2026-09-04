@@ -760,6 +760,95 @@ table I had just been told was created.
 
 ---
 
+## 19. The pipeline erased every recovery it had just recorded, and disarmed the "they already paid" rule
+
+**When:** Milestone 6, reading the first complete batch's scorecard.
+
+Detection scored 95.2% precision. Then, two lines down:
+
+```
+planted_incremental_paise    10842800
+measured_incremental_paise   0
+ci95_paise                   [0, 0]
+```
+
+The batch contained 85 real recoveries. The system reported zero.
+
+`recovered_at` and `recovered_paise` were correct on all 85 rows. Only `state`
+was wrong — not one row said `recovered`:
+
+```
+by state:   deferred 472 (66 with recovered_at)
+            at_risk  120 (8  with recovered_at)
+            blocked_by_policy 61 (11 with recovered_at)
+
+recovered_at set but state <> 'recovered':  85 of 85
+```
+
+**Every stage of the pipeline wrote `state` unconditionally.** A recovery is
+recorded during ingestion; `triage.classify` was queued *before* that recovery
+arrived, and when it finished it ran its `settle-state` step and put the event
+back to `at_risk`. Later `recovery.plan` moved it to `deferred`. Each job was
+doing exactly what it was written to do. The event was recovered, then quietly
+un-recovered by a job that had started earlier and finished later.
+
+Nothing errored. Not one line of anything looked wrong.
+
+**The metric was the second-worst consequence.** The first is that
+`stop_on: payment_success` reads the state:
+
+```ts
+if (state === 'recovered') fired.push('payment_success');
+```
+
+So the rule that stops LEAKPROOF contacting a customer who has **already paid**
+was silently disarmed for every recovered event in the batch. It never fired
+once — `policy_evaluations` mentioning `stop_on`: zero. Nobody was actually
+contacted here only because 4 September 2026 is Janmashtami and the gate
+deferred all 472 attempts to the next working day. On any other date this batch
+would have chased hundreds of customers for money they had already sent.
+
+Which is the whole product, inverted. The thing LEAKPROOF exists to avoid.
+
+**Fix, in two parts, because one is not enough.**
+
+*A terminal state is terminal.* `setEventState` adds `AND state NOT IN
+('recovered','lost','stopped')` to every transition, and all six unguarded
+writes across four jobs now go through it. `state.ts` holds `OPEN_STATES` and
+`TERMINAL_STATES` side by side, and `state.test.ts` asserts they partition
+`event_state_t` exactly — so adding a state and forgetting one of the lists
+fails the suite instead of silently making recoveries unmatchable.
+
+*The metrics read the fact, not the label.* `recovered_at` is a timestamp
+written once by the code that recorded the money. `state` is a label four
+different jobs write. The number that decides whether this project worked should
+not depend on a label winning a race, so `loadArms`, the timeseries and the
+rollup now all key off `recovered_at IS NOT NULL`.
+
+The second fix was verified against the corrupted data itself — no re-run, no
+repair. Same 653 events, same clobbered states:
+
+```
+planted lift (realised)       9.39pp
+measured lift                 9.3917pp
+planted incremental        ₹1,08,428   (counterfactual)
+measured incremental         ₹52,559
+95% interval          [−₹2,20,633, ₹1,62,915]   covers the truth ✓
+powered: false — "control arm has 120 events, needs 300"
+```
+
+**Found only because the generator knew the answer.** Everything upstream was
+green: 653 events ingested, 653 classified, 95.2% precision, zero errors in the
+logs, a dashboard that would have looked healthy. The single thing that caught
+it was a corpus that could say "there were 85 recoveries here" while the system
+said zero. That is the argument for the generator being a first-class citizen
+rather than a fixture, and it is the fourth time on this project that the
+dangerous bug returned a plausible wrong answer instead of an error — after the
+EWMA baseline (#3), the replaying policy gate (#7) and the unhashed `detail`
+field (#10).
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.
