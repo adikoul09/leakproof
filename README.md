@@ -389,17 +389,45 @@ also runs hourly as a cron.
 
 ### Recovery detection
 
-Two paths, deliberately distinct:
+Three paths, deliberately distinct:
 
 - **attributed** — a recovery link was paid. `payment_link.paid` carries our
   attempt UUID as `reference_id`, so attribution is exact.
-- **organic** — the payment simply succeeded. Razorpay issues a *new* payment
-  id for a retry, so the **order id** is the only thread tying it back to the
-  failure it resolves.
+- **organic, payments** — the payment simply succeeded. Razorpay issues a *new*
+  payment id for a retry, so the **order id** is the only thread tying it back
+  to the failure it resolves.
+- **organic, subscriptions** — `subscription.charged`. The at-risk row's id
+  *is* the subscription id, so it matches directly.
 
-The organic path is not a nicety: it is the only way the control arm ever
-records a recovery. Without it the control rate reads zero and every
+The organic paths are not a nicety: they are the only way the control arm ever
+records a recovery. Without them the control rate reads zero and every
 incrementality figure is inflated to the point of fraud.
+
+### The subscription surface
+
+A halted subscription is an at-risk unit exactly like a failed payment, and it
+joins the **same** pipeline — same table, same classifier, same policy gate,
+same experiment arms. Only `surface` differs.
+
+```
+sub_EMBEDDED0001    upi   ₹998.00  mandate_invalid  leakproof  mandate_repair  sent
+sub_TXsbmklSi9BjcX  card  ₹499.00  mandate_invalid  control    —               held out
+```
+
+Two details that needed checking against the live API rather than assuming:
+
+- **The amount is not on the subscription.** It lives on the plan, and the
+  subscription entity embeds `plan` on the *create* response but **not** on the
+  list endpoint — so neither can be assumed. The embedded plan is used when
+  present and a plan lookup fills in when it is not. Amount is
+  `plan.item.amount × quantity`; ignoring quantity would understate a
+  multi-seat subscription.
+- **`subscription.halted` classifies as `mandate_invalid`, and customer-side.**
+  Razorpay halts only after retries are exhausted, so the mandate genuinely can
+  no longer be charged and `mandate_repair` is the one rail that can fix it.
+  Customer-flavoured matters: a wave of halted subscriptions is a wave of
+  individually broken mandates, not an outage, and must never trip the circuit
+  breaker.
 
 ### Data model
 
@@ -500,3 +528,8 @@ Stated up front rather than discovered by a judge. Full detail in
   0.8 against the generator's injected outage, and that has not been measured.
 - **No Hinglish voice rail** (`FEATURE_VOICE=false`); **subscriptions, not
   invoices**, as the second surface.
+- **`subscription.charged` is handled in code but must be registered on the
+  webhook.** It is the only signal for a halted subscription recovering
+  *organically*, and without it the subscription surface's control arm reads
+  zero and its incrementality is inflated — the same trap the `order_id` path
+  avoids for payments.

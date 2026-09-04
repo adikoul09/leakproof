@@ -53,7 +53,36 @@ export interface NormalizedEvent {
  */
 export type RecoverySignal =
   | { kind: 'link_paid'; referenceId: string; amountPaise: number; at: Date }
-  | { kind: 'payment_captured'; orderId: string | null; paymentId: string; amountPaise: number; at: Date };
+  | { kind: 'payment_captured'; orderId: string | null; paymentId: string; amountPaise: number; at: Date }
+  | { kind: 'subscription_charged'; subscriptionId: string; amountPaise: number; at: Date };
+
+/**
+ * A subscription that can no longer be charged.
+ *
+ * `amountPaise` is null when the webhook payload does not embed the plan —
+ * verified against the live API, the subscription *create* response embeds
+ * `plan` but the list endpoint does not, so neither can be assumed. The
+ * ingestion job resolves it with a plan lookup when it is missing.
+ */
+export interface SubscriptionSignal {
+  id: string;
+  planId: string | null;
+  quantity: number;
+  amountPaise: number | null;
+  currency: string;
+  paymentMethod: string | null;
+  status: string;
+  totalCount: number | null;
+  paidCount: number | null;
+  remainingCount: number | null;
+  authAttempts: number | null;
+  customerId: string | null;
+  customerEmail: string | null;
+  customerContact: string | null;
+  at: Date;
+  /** Which webhook produced this — halted is terminal, pending is a warning. */
+  reason: 'subscription_halted' | 'subscription_pending';
+}
 
 export interface NormalizedWebhook {
   /** What the webhook told us about a payment outcome, for cohort counters. */
@@ -61,6 +90,7 @@ export interface NormalizedWebhook {
   event: NormalizedEvent | null;
   customer: NormalizedCustomer | null;
   recovery: RecoverySignal | null;
+  subscription: SubscriptionSignal | null;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -136,6 +166,7 @@ export function normalizeWebhook(body: Json): NormalizedWebhook {
         outcome: 'other',
         event: null,
         customer: null,
+        subscription: null,
         recovery: {
           kind: 'link_paid',
           referenceId,
@@ -146,8 +177,66 @@ export function normalizeWebhook(body: Json): NormalizedWebhook {
     }
   }
 
+  // ── Subscriptions ─────────────────────────────────────────────────
+  const subEntity = body?.payload?.subscription?.entity;
+  if (subEntity && (eventType === 'subscription.halted' || eventType === 'subscription.pending')) {
+    const quantity = Number(subEntity.quantity ?? 1);
+    // The plan is embedded on some payloads and absent on others; take it when
+    // it is there and let the caller resolve it when it is not.
+    const embeddedAmount = subEntity?.plan?.item?.amount;
+    return {
+      outcome: 'failed',
+      event: null,
+      customer: null,
+      recovery: null,
+      subscription: {
+        id: String(subEntity.id),
+        planId: subEntity.plan_id ?? null,
+        quantity,
+        amountPaise:
+          typeof embeddedAmount === 'number' ? embeddedAmount * quantity : null,
+        currency: subEntity?.plan?.item?.currency ?? 'INR',
+        paymentMethod: subEntity.payment_method ?? null,
+        status: String(subEntity.status ?? 'unknown'),
+        totalCount: subEntity.total_count ?? null,
+        paidCount: subEntity.paid_count ?? null,
+        remainingCount: subEntity.remaining_count ?? null,
+        authAttempts: subEntity.auth_attempts ?? null,
+        customerId: subEntity.customer_id ?? null,
+        customerEmail: subEntity.customer_email ?? null,
+        customerContact: subEntity.customer_contact ?? null,
+        at: fromUnix(subEntity.halted_at ?? subEntity.current_end ?? body?.created_at),
+        reason: eventType === 'subscription.halted' ? 'subscription_halted' : 'subscription_pending',
+      },
+    };
+  }
+
+  /**
+   * A subscription charged successfully. This is how a *halted* subscription
+   * recovers organically — the customer fixes their card and Razorpay's own
+   * retry succeeds, with no involvement from us. Without it, organic recovery
+   * on the subscription surface is invisible and its control arm reads zero,
+   * which would inflate incrementality exactly as the missing order-id path
+   * would have for payments.
+   */
+  if (subEntity && eventType === 'subscription.charged') {
+    const paid = body?.payload?.payment?.entity;
+    return {
+      outcome: 'succeeded',
+      event: null,
+      customer: null,
+      subscription: null,
+      recovery: {
+        kind: 'subscription_charged',
+        subscriptionId: String(subEntity.id),
+        amountPaise: Number(paid?.amount ?? 0),
+        at: fromUnix(paid?.created_at ?? body?.created_at),
+      },
+    };
+  }
+
   if (!eventType || !payment) {
-    return { outcome: 'other', event: null, customer: null, recovery: null };
+    return { outcome: 'other', event: null, customer: null, recovery: null, subscription: null };
   }
 
   const outcome: NormalizedWebhook['outcome'] = FAILURE_EVENTS.has(eventType)
@@ -192,5 +281,5 @@ export function normalizeWebhook(body: Json): NormalizedWebhook {
         }
       : null;
 
-  return { outcome, event, customer, recovery };
+  return { outcome, event, customer, recovery, subscription: null };
 }

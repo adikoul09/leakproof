@@ -104,6 +104,34 @@ export async function recordPaymentCaptured(
 }
 
 /**
+ * A subscription charged successfully — the halted subscription recovered.
+ *
+ * The at-risk row's id *is* the subscription id (blueprint 6.2: ids are
+ * pay_xxx / sub_xxx / inv_xxx), so this matches directly. This is the
+ * subscription surface's organic-recovery path, and without it that surface's
+ * control arm would read zero.
+ */
+export async function recordSubscriptionCharged(
+  subscriptionId: string,
+  amountPaise: number,
+  at: Date,
+): Promise<RecoveryResult> {
+  const [row] = await db
+    .select({ id: paymentEvents.id, amountPaise: paymentEvents.amountPaise })
+    .from(paymentEvents)
+    .where(and(eq(paymentEvents.id, subscriptionId), inArray(paymentEvents.state, OPEN_STATES)))
+    .limit(1);
+  if (!row) return NOT_FOUND;
+
+  // A subscription charge webhook does not always carry the payment amount;
+  // fall back to the plan amount recorded when the event was ingested rather
+  // than booking a recovery of zero rupees.
+  const amount = amountPaise > 0 ? amountPaise : row.amountPaise;
+  const already = await markRecovered(row.id, amount, at);
+  return { eventId: row.id, attributed: false, alreadyRecovered: already };
+}
+
+/**
  * Idempotent. Returns true if the event was already marked recovered, so a
  * redelivered webhook cannot double-count a rupee into the headline number.
  */

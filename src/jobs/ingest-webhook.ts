@@ -9,10 +9,16 @@ import { NonRetriableError } from 'inngest';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { armAssignments, webhookReceipts } from '@/db/schema';
-import { normalizeWebhook } from '@/core/ingest/normalize';
+import { normalizeCustomer, normalizeWebhook } from '@/core/ingest/normalize';
 import { insertPaymentEvent, upsertCustomer } from '@/core/ingest/persist';
 import { cohortDim } from '@/core/triage/classifier';
-import { recordLinkPaid, recordPaymentCaptured } from '@/core/experiment/recovery';
+import { amountBand, istHour } from '@/core/triage/config';
+import { fetchPlan } from '@/core/rails/razorpay';
+import {
+  recordLinkPaid,
+  recordPaymentCaptured,
+  recordSubscriptionCharged,
+} from '@/core/experiment/recovery';
 import { appendLedgerSafe } from '@/core/ledger/append';
 import { postgresCohortStore } from '@/core/triage/cohort-store';
 import { inngest } from '@/lib/inngest';
@@ -40,11 +46,17 @@ export const ingestWebhook = inngest.createFunction(
     // incrementality result is measured from.
     if (normalized.recovery) {
       const rec = normalized.recovery;
-      const outcome = await step.run('record-recovery', async () =>
-        rec.kind === 'link_paid'
-          ? recordLinkPaid(rec.referenceId, rec.amountPaise, new Date(rec.at))
-          : recordPaymentCaptured(rec.paymentId, rec.orderId, rec.amountPaise, new Date(rec.at)),
-      );
+      const outcome = await step.run('record-recovery', async () => {
+        const at = new Date(rec.at);
+        switch (rec.kind) {
+          case 'link_paid':
+            return recordLinkPaid(rec.referenceId, rec.amountPaise, at);
+          case 'subscription_charged':
+            return recordSubscriptionCharged(rec.subscriptionId, rec.amountPaise, at);
+          case 'payment_captured':
+            return recordPaymentCaptured(rec.paymentId, rec.orderId, rec.amountPaise, at);
+        }
+      });
       if (outcome.eventId) {
         // The receipt for a rupee coming back. `attributed` distinguishes a
         // link we sent from an organic recovery, which is the difference the
@@ -81,6 +93,80 @@ export const ingestWebhook = inngest.createFunction(
       }
       // No open failure matched — fall through so a successful payment still
       // feeds the cohort denominator.
+    }
+
+    // ── Subscriptions ─────────────────────────────────────────────
+    // A halted subscription is an at-risk unit exactly like a failed payment,
+    // and it joins the same pipeline: same table, same classifier, same policy
+    // gate, same experiment arms. Only the surface differs.
+    if (normalized.subscription) {
+      const sub = normalized.subscription;
+
+      const amountPaise = await step.run('resolve-subscription-amount', async () => {
+        if (sub.amountPaise !== null) return sub.amountPaise;
+        if (!sub.planId) return 0;
+        // The plan is embedded on some payloads and not others, so this is the
+        // fallback rather than the default path.
+        const plan = await fetchPlan(sub.planId);
+        return plan.item.amount * sub.quantity;
+      });
+
+      const customer = sub.customerContact || sub.customerEmail
+        ? normalizeCustomer({
+            contact: sub.customerContact,
+            email: sub.customerEmail,
+            customer_id: sub.customerId,
+          })
+        : null;
+
+      if (customer) await step.run('upsert-sub-customer', () => upsertCustomer(customer));
+
+      const at = new Date(sub.at);
+      const isNew = await step.run('insert-subscription-event', () =>
+        insertPaymentEvent({
+          id: sub.id,
+          surface: 'subscription',
+          customerId: customer?.id ?? null,
+          amountPaise,
+          currency: sub.currency,
+          method: sub.paymentMethod ?? 'emandate',
+          orderId: null,
+          issuer: null,
+          cardNetwork: null,
+          amountBand: amountBand(amountPaise),
+          timeBucket: istHour(at),
+          errCode: null,
+          errDescription: `subscription ${sub.status} after ${sub.authAttempts ?? 0} auth attempts`,
+          errSource: 'customer',
+          errStep: 'subscription_charge',
+          // Drives the taxonomy to mandate_invalid, which routes to
+          // mandate_repair — the only action that can fix a halted mandate.
+          errReason: sub.reason,
+          isSynthetic: false,
+          failedAt: at,
+        }),
+      );
+
+      if (isNew) {
+        await step.run('observe-subscription', () =>
+          postgresCohortStore.observe(
+            cohortDim({ issuer: null, method: sub.paymentMethod ?? 'emandate', amountPaise }),
+            at,
+            true,
+          ),
+        );
+      }
+
+      await step.run('mark-processed', () => markProcessed(receiptId));
+
+      if (!isNew) return { duplicate: true, eventId: sub.id };
+
+      await step.sendEvent('queue-triage', {
+        name: 'event.ready_for_triage',
+        data: { eventId: sub.id, source: 'webhook' as const },
+      });
+
+      return { eventId: sub.id, surface: 'subscription', amountPaise };
     }
 
     if (!normalized.event) {

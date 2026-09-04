@@ -111,6 +111,16 @@ const REASON_MAP: Record<string, { failureClass: FailureClass; flavour: Flavour 
   mandate_not_found: { failureClass: 'mandate_invalid', flavour: 'customer' },
   mandate_expired: { failureClass: 'mandate_invalid', flavour: 'customer' },
   emandate_registration_failure: { failureClass: 'mandate_invalid', flavour: 'customer' },
+  /**
+   * Synthesised by the ingestion layer from `subscription.halted`. Razorpay
+   * halts a subscription only after its retries are exhausted, which means the
+   * mandate can no longer be charged — so repairing the mandate is the correct
+   * action, and `mandate_invalid` routes there. It is customer-flavoured: a
+   * wave of halted subscriptions is a wave of individually broken mandates,
+   * not an outage, and must never trip the circuit breaker.
+   */
+  subscription_halted: { failureClass: 'mandate_invalid', flavour: 'customer' },
+  subscription_pending: { failureClass: 'mandate_invalid', flavour: 'customer' },
 
   // ── customer walked away ──
   payment_cancelled: { failureClass: 'customer_abandoned', flavour: 'customer' },

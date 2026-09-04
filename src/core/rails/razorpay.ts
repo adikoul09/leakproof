@@ -136,6 +136,25 @@ async function createPaymentLinkRaw(req: PaymentLinkRequest): Promise<PaymentLin
   });
 }
 
+export interface Plan {
+  id: string;
+  period: string;
+  interval: number;
+  item: { amount: number; currency: string; name?: string };
+}
+
+/**
+ * Fetch a plan to resolve a subscription's amount.
+ *
+ * Needed because the subscription entity only *sometimes* embeds its plan: the
+ * create response does, the list endpoint does not. Verified against the live
+ * test-mode API rather than assumed, so the caller tries the embedded plan
+ * first and falls back here.
+ */
+export async function fetchPlan(planId: string): Promise<Plan> {
+  return call<Plan>(`/plans/${encodeURIComponent(planId)}`);
+}
+
 export interface Downtime {
   id: string;
   method: string;
