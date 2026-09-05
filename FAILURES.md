@@ -1570,6 +1570,50 @@ beside its corpus count, and does not.
 **Cost:** ~3 hours of stalled drain, self-inflicted; ~40 minutes to diagnose the
 lazy-route half and write the recovery script.
 
+## 34. The watcher went quiet, and quiet read as "still waiting"
+
+**What broke:** the script left running to catch the Razorpay cooldown lifting
+stopped measuring anything at 15:38 and nobody noticed for eight hours. Its
+last five heartbeats said `probe error (continuing): fetch failed`, and then it
+said nothing at all for six hours while its process sat alive and idle.
+
+**Why:** two causes stacked. The Mac took maintenance sleeps at 15:39, 15:54,
+16:10, 17:19, 17:34 and 17:50 — `pmset -g log` has all six — and each one cut
+the network under an in-flight request. Undici keeps sockets alive between
+calls, so the pool came back holding connections to a NAT binding that no
+longer existed. Worse, the loop eventually wedged inside a `fetch` that
+`AbortSignal.timeout` never rescued: the abort fires on a timer, but the
+promise it was racing had already been handed a socket that would never settle
+or error. The heartbeat lived *after* the probe in the same loop body, so a
+hung probe took the heartbeat down with it.
+
+**How I found it:** not from the watcher — from asking why a script that prints
+every 30 minutes had printed nothing since 18:08. `ps -o lstart` said the
+process had started at 18:05, three minutes before its last line, which meant
+the log I was reading spanned two incarnations and the current one had emitted
+exactly once. A plain `curl` POST from the shell returned a clean 429 in half a
+second, proving the account was reachable and the probe was not.
+
+**The fix:** three changes, all aimed at the silence rather than the network.
+`connection: close` on every probe, so no socket is ever reused across a sleep
+boundary. A `Promise.race` deadline *outside* `fetch`, so a wedged socket
+cannot outlive its timeout even when the abort signal is ignored. And
+heartbeats keyed to wall-clock rather than to loop iterations, plus a stall
+alarm that fires when no probe has reached Razorpay for 45 minutes.
+
+**What it means for the system:** the monitoring guidance I was working to says
+a filter must match every terminal state because silence looks identical to
+"still running". I wrote a watcher that obeyed that for the *job* it watched —
+it had lines for cleared, fired, aborted, and failed-before-compose — and then
+let the watcher's own liveness go unmonitored. A probe that cannot reach the
+thing it is probing is not a quiet probe, it is a broken instrument, and it now
+says so out loud. The same hole exists in any long-lived poller on a laptop
+that sleeps, which in this project is all of them.
+
+**Cost:** eight hours of wall-clock in which the cooldown might have lifted and
+nothing would have fired. Unrecoverable — but see #32, the cooldown had not
+lifted anyway, so the loss was of information rather than of a window.
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.
