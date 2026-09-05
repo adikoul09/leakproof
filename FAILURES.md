@@ -1434,6 +1434,79 @@ job from fixing a wrapping bug.
 
 ---
 
+## 32. A two-second cooldown answered with a two-and-a-half-hour backoff
+
+**When:** Milestone 11, chasing "why has `recovery.execute` completed 5 of 4,533
+attempts in six and a half hours?"
+
+**Symptom:** 3,590 attempts past their scheduled time, `executed_at` frozen at 5
+since 02:32 UTC, and `messages` stuck at the same 5 rows — all of them written
+before Gemini was wired, so none could ever be the composed row I was watching
+for. The Inngest queue looked healthy: runs were being created continuously and
+sat in QUEUED.
+
+**First two theories, both wrong.** `recovery.execute` is the only function
+carrying `concurrency: { limit: 5 }`, and exactly 5 attempts had executed. That
+coincidence is almost perfect and it is meaningless. The second theory was queue
+starvation — the dev server tops out around 34 runs/min and `triage.classify`,
+`recovery.plan` and `experiment.assign` were all competing. Also wrong.
+
+**Diagnosis:** the run trace showed `create-payment-link` FAILED across four
+attempts at 06:19, 06:27, 06:52 and 08:48, each failing in about a second, the
+run dying before it ever reached `compose` or `record-send`. The error:
+
+```
+RazorpayError: Too many requests
+```
+
+Probing the API directly is what made it obvious. A GET returned 200 in 534ms.
+A POST to the same account returned:
+
+```
+HTTP 429 in 95ms   retry-after: 2
+```
+
+Razorpay rate-limits link creation on a short token bucket and **says how long
+to wait**. Two seconds. Nothing in `razorpay.ts` read the header. It marked 429
+retriable and handed it to Inngest, whose retry ladder is sized for
+infrastructure outages: 8 minutes, then 25, then 2 hours, then the run is dead.
+A two-second cooldown was escalated into a 150-minute one and then a permanent
+failure, ~4,500 times over.
+
+The comment above the function's `throttle` block describes exactly this failure
+from an earlier 600-event batch, and the throttle was the fix. It was not
+enough, and worse — the retries themselves are load. 3,590 past-due attempts x 4
+tries is ~14,000 create calls against a bucket that wanted 2 seconds between
+them. The mechanism that was supposed to protect the rail was feeding it.
+
+**Fix:** two halves, both in `src/core/rails/razorpay.ts`.
+
+1. `RazorpayError` now carries `retryAfterMs` parsed from the header, and
+   `call()` waits it out **in-process** — bounded by a 20s budget, after which
+   the durable retry is the right escalation, just not the first one. Jitter is
+   load-bearing: without it every run 429'd in the same second wakes in the same
+   second and collides again.
+2. Writes pass through a shared pacer whose interval doubles on a 429 and decays
+   on success, so the process converges on the real ceiling instead of guessing.
+   Process-local, which is the honest scope for one dev server; a multi-instance
+   deploy would need this in Redis beside the policy counters.
+
+**What the fix did not do:** clear the block. By the time it landed, the account
+had escalated from the short bucket to a coarser cooldown — a different envelope
+(`"Request failed. Please try after sometime."`, `source: "business"`, and no
+`Retry-After` header at all). Code cannot shorten that; only not hammering can.
+The fix prevents the next occurrence, it does not undo this one.
+
+**The honest lesson:** I read the 429 as "we are going too fast" and reached for
+capacity controls, when the response body was already telling me the exact
+remedy in a header I never read. And retry policy is not one setting — a token
+bucket and a dead upstream both surface as "retriable" and want opposite
+backoffs. Treating them the same turned a self-healing condition into a
+self-inflicted outage.
+
+**Cost:** ~50 minutes to diagnose, ~15 to fix, and a Razorpay test account in
+cooldown for an unknown period on demo day.
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

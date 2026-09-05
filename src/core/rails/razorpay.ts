@@ -15,6 +15,8 @@ export class RazorpayError extends Error {
     readonly code: string,
     message: string,
     readonly retriable: boolean,
+    /** What Razorpay's own `Retry-After` header asked for, in ms. */
+    readonly retryAfterMs: number | null = null,
   ) {
     super(message);
     this.name = 'RazorpayError';
@@ -26,7 +28,76 @@ function authHeader(): string {
   return `Basic ${token}`;
 }
 
+/**
+ * Adaptive pacing for Razorpay writes.
+ *
+ * Razorpay rate-limits link creation on a short token bucket: the 429 comes
+ * back in ~95ms carrying `Retry-After: 2`. Two seconds. The queue's retry
+ * ladder answered that with 8 minutes, then 25, then 2 hours, then gave up —
+ * so a two-second cooldown killed the run at `create-payment-link` before it
+ * ever reached `compose`, and 4,400 attempts executed 5 of themselves in six
+ * hours. A backoff sized for an outage is the wrong instrument for a token
+ * bucket. FAILURES.md #32.
+ *
+ * The fix has two halves. This half stops us provoking the limit at all:
+ * writes are spaced by a shared interval that doubles on a 429 and decays on
+ * success, so the process converges on Razorpay's real ceiling instead of
+ * guessing one. `call()` below is the other half — it waits the Retry-After
+ * out in-process rather than surfacing it to the queue.
+ *
+ * Process-local, which is the honest scope: one dev server, one worker. A
+ * multi-instance deploy would need this in Redis beside the policy counters.
+ */
+const PACE_FLOOR_MS = 120;
+const PACE_CEILING_MS = 4_000;
+let paceMs = 250;
+let nextWriteSlot = 0;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Reserves this caller's slot in the write stream and waits for it. */
+async function pacedWriteSlot(): Promise<void> {
+  const now = Date.now();
+  const slot = Math.max(now, nextWriteSlot);
+  nextWriteSlot = slot + paceMs;
+  if (slot > now) await sleep(slot - now);
+}
+
+/**
+ * How long we will absorb rate limiting inside the step before handing the
+ * failure back to the queue. Bounded so a step cannot sit open indefinitely —
+ * past this the durable retry is the right escalation, it just should not be
+ * the *first* one.
+ */
+const RETRY_BUDGET_MS = 20_000;
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  const isWrite = (init?.method ?? 'GET').toUpperCase() !== 'GET';
+  const deadline = Date.now() + RETRY_BUDGET_MS;
+
+  for (let attempt = 0; ; attempt += 1) {
+    if (isWrite) await pacedWriteSlot();
+    try {
+      const out = await callOnce<T>(path, init);
+      // Decay slowly: a single success does not prove the limit has lifted.
+      if (isWrite) paceMs = Math.max(PACE_FLOOR_MS, Math.round(paceMs * 0.9));
+      return out;
+    } catch (err) {
+      if (!(err instanceof RazorpayError) || !err.retriable) throw err;
+      if (err.status === 429 && isWrite) paceMs = Math.min(PACE_CEILING_MS, paceMs * 2);
+
+      // Razorpay's own number when it gave one, otherwise a short exponential.
+      // The jitter is load-bearing: without it every run 429'd in the same
+      // second wakes in the same second and collides again.
+      const base = err.retryAfterMs ?? Math.min(4_000, 250 * 2 ** attempt);
+      const wait = base + Math.random() * 250;
+      if (Date.now() + wait > deadline) throw err;
+      await sleep(wait);
+    }
+  }
+}
+
+async function callOnce<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE}${path}`, {
@@ -57,7 +128,11 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     }
     // 5xx and 429 are worth retrying; a 4xx means we sent something wrong.
     const retriable = res.status >= 500 || res.status === 429;
-    throw new RazorpayError(res.status, code, description, retriable);
+    // Razorpay tells us how long to wait. Believing it is the whole fix.
+    const header = Number(res.headers.get('retry-after'));
+    const retryAfterMs =
+      Number.isFinite(header) && header > 0 ? Math.min(30_000, header * 1000) : null;
+    throw new RazorpayError(res.status, code, description, retriable, retryAfterMs);
   }
 
   return JSON.parse(text) as T;
