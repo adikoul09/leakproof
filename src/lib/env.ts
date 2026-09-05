@@ -51,7 +51,7 @@ export const env = {
     return required('GEMINI_API_KEY');
   },
   get geminiModel() {
-    return process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    return process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
   },
   get appUrl() {
     return process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';

@@ -21,7 +21,8 @@ import { buildPolicyContext } from '@/core/policy/context';
 import { evaluatePolicy } from '@/core/policy/evaluate';
 import { parsePolicy } from '@/core/policy/schema';
 import { getLivePolicy } from '@/core/policy/store';
-import { effectiveChannel, renderTemplate, whatsappBlockers } from '@/core/messaging/templates';
+import { effectiveChannel, whatsappBlockers } from '@/core/messaging/templates';
+import { composeMessage } from '@/core/messaging/compose';
 import { WhatsAppError, isWhatsappConfigured, sendTemplate } from '@/core/rails/whatsapp';
 import { RazorpayError, createPaymentLink } from '@/core/rails/razorpay';
 import { costOf, type CostItem } from '@/core/cost/meter';
@@ -239,6 +240,25 @@ export const recoveryExecute = inngest.createFunction(
       }
     });
 
+    // ── Compose the copy ───────────────────────────────────────────────
+    /**
+     * Its own step, deliberately. Inngest memoises per step, so folding this
+     * into `record-send` would re-invoke Gemini every time the database write
+     * was retried — paying twice and, worse, sending copy the earlier attempt
+     * had already linted and approved.
+     */
+    const composed = await step.run('compose', () =>
+      composeMessage({
+        rail,
+        merchantName: MERCHANT_NAME,
+        merchantDescriptor: MERCHANT_DESCRIPTOR,
+        amountPaise: snapshot.pe.amountPaise,
+        shortUrl: link.short_url,
+        failureClass: 'n/a',
+        channel,
+      }),
+    );
+
     // ── Record the spend and the message ───────────────────────────────
     await step.run('record-send', async () => {
       // Priced on the channel that actually carried it, not the one the rail
@@ -251,13 +271,6 @@ export const recoveryExecute = inngest.createFunction(
             ? 'email_message'
             : 'sms_message';
       const cost = costOf(costItem) + costOf('payment_link_created');
-
-      const body = renderTemplate(rail, {
-        merchantName: MERCHANT_NAME,
-        amountPaise: snapshot.pe.amountPaise,
-        shortUrl: link.short_url,
-        failureClass: 'n/a',
-      });
 
       await db
         .update(recoveryAttempts)
@@ -293,11 +306,16 @@ export const recoveryExecute = inngest.createFunction(
         attemptId,
         channel,
         language: 'en',
-        body,
-        // Static template for now. composeMessage() over Gemini slots in behind
-        // the same interface; until it does, every message is a fallback and
-        // is honestly recorded as one.
-        usedFallback: true,
+        body: composed.body,
+        llmModel: composed.model,
+        llmPromptHash: composed.promptHash,
+        llmTokensIn: composed.tokensIn,
+        llmTokensOut: composed.tokensOut,
+        // The real answer now, not a constant. `false` means Gemini wrote this
+        // and the linter passed it; `true` means the template did, and
+        // `fallbackReason` on the ledger receipt says which of the three ways
+        // we got there.
+        usedFallback: composed.usedFallback,
         sentAt: new Date(),
         costPaise: costOf(costItem),
         providerMessageId: whatsappMessageId,
@@ -332,16 +350,27 @@ export const recoveryExecute = inngest.createFunction(
         gateResult: decision.gateResult,
         action: 'action_sent',
         outcome: 'awaiting_response',
-        costPaise: costOf(
-          channel === 'whatsapp' ? 'whatsapp_utility_message' : channel === 'email' ? 'email_message' : 'sms_message',
-        ) + costOf('payment_link_created'),
+        costPaise:
+          costOf(
+            channel === 'whatsapp'
+              ? 'whatsapp_utility_message'
+              : channel === 'email'
+                ? 'email_message'
+                : 'sms_message',
+          ) +
+          costOf('payment_link_created') +
+          (composed.usedFallback ? 0 : costOf('llm_compose')),
+        llmPromptHash: composed.promptHash,
         detail: {
           attempt_id: attemptId,
           rail,
           channel,
           razorpay_link_id: link.id,
           short_url: link.short_url,
-          used_fallback: true,
+          used_fallback: composed.usedFallback,
+          composer: composed.usedFallback ? 'template' : (composed.model ?? 'llm'),
+          ...(composed.fallbackReason ? { fallback_reason: composed.fallbackReason } : {}),
+          ...(composed.latencyMs ? { compose_ms: composed.latencyMs } : {}),
         },
       }),
     );

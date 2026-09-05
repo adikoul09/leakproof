@@ -30,7 +30,7 @@ const rupees = (paise: number) =>
  * not say what it is opting out OF invites a STOP that silences transactional
  * messages the customer actually wants.
  */
-const OPT_OUT = 'Reply STOP to opt out of payment reminders.';
+export const OPT_OUT = 'Reply STOP to opt out of payment reminders.';
 
 /**
  * Keyed by rail, because what to say follows from what we are asking the
@@ -63,6 +63,16 @@ const BY_RAIL: Partial<Record<Rail, (i: TemplateInput) => string>> = {
     `The auto-payment mandate for ${i.merchantName} needs to be set up again. ` +
     `You can fix it here: ${i.shortUrl} ${OPT_OUT}`,
 };
+
+/**
+ * Whether this rail's copy asks for a specific sum.
+ *
+ * A mandate repair does not. It asks the customer to re-authorise a recurring
+ * instruction, and quoting a figure there describes a charge that is not being
+ * made. The linter reads this rather than requiring an amount everywhere —
+ * the first version did, and the template it is meant to protect failed it.
+ */
+export const railStatesAmount = (rail: string): boolean => rail !== 'mandate_repair';
 
 export function renderTemplate(rail: Rail, input: TemplateInput): string {
   const fn = BY_RAIL[rail];

@@ -45,7 +45,7 @@ export const RATES = {
   /** One composeMessage() call on gemini-2.5-flash, ~600 in / ~120 out. */
   llm_compose: {
     paise: 0,
-    source: 'Gemini free tier at this volume; the composer is not live yet in any case',
+    source: 'Gemini free tier at this volume — the composer is live, and billed only when its output ships',
   },
   /** A human picking up an escalation. Fully loaded minutes, not wages. */
   human_escalation: {
