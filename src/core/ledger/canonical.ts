@@ -28,9 +28,13 @@
  * This implementation sorts keys at every depth, preserves array order (arrays
  * are ordered data, not sets), and refuses values JSON cannot round-trip
  * rather than silently turning them into `null`.
+ *
+ * Deliberately free of imports, crypto included — `chainHash` lives in
+ * `chain.ts`. That keeps this module importable from the browser, so the
+ * Ledger screen can recompute a row's hash in the reader's own machine using
+ * the same serialisation the server used rather than a second copy of these
+ * rules that would quietly drift out of agreement with them.
  */
-import { sha256 } from '@/lib/hash';
-
 export const GENESIS_PREV_HASH = '0'.repeat(64);
 
 /** Values that survive a JSON round trip unchanged. */
@@ -109,13 +113,4 @@ export function toCanonical(value: unknown, path = ''): Canonical {
 /** Deterministic string form of a record. */
 export function canonicalString(record: unknown): string {
   return JSON.stringify(toCanonical(record));
-}
-
-/**
- * The chain link: sha256 over the previous hash concatenated with this
- * record's canonical form. Any edit to any field, at any depth, changes this
- * hash and every hash after it.
- */
-export function chainHash(prevHash: string, record: unknown): string {
-  return sha256(prevHash + canonicalString(record));
 }

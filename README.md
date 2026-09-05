@@ -26,6 +26,8 @@ Razorpay Buildathon, Track 03.
 | 6 | Synthetic data generator | ✅ seeded, documented, and used to tune the detector |
 | 7 | Control Tower dashboard | ✅ queue, KPI strip, decision trace drawer |
 | 8 | Replay / what-if engine | ✅ decisions replayed, outcomes modelled and labelled |
+| 9 | Entry screen + outage detection cron | ✅ `outage.detect` cross-checks the Downtime API |
+| 10 | Incrementality Lab + Audit Ledger screens | ✅ estimator shown in full, chain verified client-side |
 
 ---
 
@@ -527,10 +529,10 @@ on this screen that looks like events vanishing.
 It will not show an unsupported number confidently. The incremental tile renders
 grey and labelled `UNDERPOWERED` when the experiment cannot carry the claim, and
 the rail prints the power blockers and caveats *beside* the number rather than
-in a methodology note. On a partially-drained batch that currently includes
-"mean ticket size differs by 52.2% across arms; the randomisation may not be
-clean and the headline number should be treated with suspicion" — the estimator
-criticising its own output, on the screen where the output is shown.
+in a methodology note. On the current corpus that includes a randomisation warning —
+mean ticket size differs by roughly 37% across arms, so the headline "should be
+treated with suspicion" — the estimator criticising its own output, on the
+screen where the output is shown.
 
 It will not conflate *no signal* with *disagreed*. The Payment Downtime API
 badge has three states, because a cohort Razorpay has no downtime data for is a
@@ -546,10 +548,97 @@ and its alternatives, the message with its prompt hash and token cost, and the
 ledger records that receipt the whole thing. `Esc` closes it, the URL is
 shareable, and `Copy trace as JSON` hands over everything the drawer rendered.
 
-The banner derives live incidents from classifications rather than reading
-`outage_windows`, which is written by an `outage.detect` cron that is not in the
-first eight milestones. Same signal, computed instead of cached; when the cron
-lands the response shape does not change.
+The banner reads `outage_windows`, written by the `outage.detect` cron. It used
+to re-derive incidents from classifications on every request, which meant two
+implementations of "what counts as an outage" that would drift the moment either
+was tuned. Resolved windows render greyed rather than red — a batch replays a
+day in minutes, and a console showing nothing because the incident ended four
+minutes ago is not a console — and banners rank by size with the tail collapsed
+to one line, so the detector's single-event false positives stay visible without
+burying the incident that matters.
+
+### The Incrementality Lab
+
+`/lab` — the screen that exists so a reader can *disagree* with the headline.
+The tower shows the number; this shows the arithmetic, the inputs, the
+randomisation check, and the estimator scored against planted ground truth.
+
+```
+GET /api/metrics/summary?seed=&iterations=   the judged result, reproducibly
+GET /api/metrics/timeseries?bucket=          cumulative recovery per arm
+GET /api/simulator/batches/:id               planted vs measured
+```
+
+**The estimator is written out with the run's own numbers substituted**, because
+a reader checking the headline should not have to open the source to find out
+what was multiplied by what — particularly since "treated" here means the
+LEAKPROOF arm alone, which is not the obvious reading:
+
+```
+incremental = n_treated × (mean per-event value treated − mean per-event value control)
+      1,764 × (₹772.11 − ₹456.53) = ₹5,56,679
+```
+
+The blueprint's simpler decomposition (`rate × n × mean recovered`) is printed
+beside it, currently disagreeing by 33%. The gap is the point: the simpler form
+assumes recovered amounts are distributed identically across arms, and a ₹40,000
+failure and a ₹200 failure do not recover at the same rate.
+
+**The chart does not default to the flattering series.** Arms are 18/20/62 by
+design, so cumulative *gross* rupees per arm plots the traffic split rather than
+the result — the LEAKPROOF line sits three times higher before the system has
+done anything. The default is mean recovered value per event, which is
+comparable across arms of any size and is also the estimator itself: the
+vertical gap between the teal and blue lines at the right edge, times the
+treated count, is the headline. Gross is still available, with the caution
+attached.
+
+**Nothing persuasive is shown without what undermines it beside it.** The lift
+sits next to the power blockers, the rupee figure next to the interval that
+contains zero, and the seed box re-runs the BCa bootstrap in front of you so the
+interval is visibly a resample rather than a hardcoded ±.
+
+**The corpus introduces itself first.** `/api/metrics/summary` reports the same
+clean +12.28pp lift with a p-value of 4e-9 whether the data is live traffic or a
+simulation that contacted nobody, so the screen states which it is before the
+headline: how many events came from the generator, how many attempts were
+planned, and how many were actually delivered. On the demo corpus that reads
+*1,672 planned · 5 delivered (0.3%)* — the lift is the planted treatment
+response being recovered by the estimator, which is what the corpus is for, and
+is not evidence that a message caused a payment.
+
+### The Audit Ledger
+
+`/ledger` — every decision the pipeline made, in order, hash-chained. Its only
+real job is to stop the chain being decorative.
+
+```
+GET /api/ledger?arm=&action=&event_id=&limit=&cursor=   keyset paginated
+GET /api/ledger/verify                                  recompute the whole chain
+GET /api/ledger/export.csv                              streamed, prev_hash + hash included
+```
+
+**A green INTACT badge the server hands you proves nothing** — it is the same
+server that would be serving a tampered row. So expanding a record recomputes
+its hash **in your own browser** with `crypto.subtle`, from that row's own
+fields, and shows the canonical bytes it hashed:
+
+```
+prev_hash          2dc5e5ab6f90f77cdfeb0aa7466f9d174c486da16c92c1378310be613d507e1c
+canonical(record)  {"action":"action_sent","actor":"system","arm":"leakproof",…}
+hash               765473bdbd320d425b59eabbd5633c83fcce0aae54fb3322dafbfb8f295f591c
+                   ✓ SHA-256 MATCHES
+```
+
+That verification uses `canonicalString` — the *same module* the pipeline hashes
+with, not a second implementation of the same rules — which is why `chainHash`
+was split out of `canonical.ts` into `chain.ts`: the serialisation had to be
+importable by a browser, and two copies of it would drift. `llm_prompt_hash` is
+in the API response for the same reason: it is part of the hashed payload, and
+omitting it would make every row fail to verify.
+
+Records are linkable. `?seq=` opens one record's receipt and `?event=` filters
+the chain to a single payment, which survives pagination.
 
 ### Replay and what-if
 

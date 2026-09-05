@@ -1243,8 +1243,18 @@ is one line and the `0.08em` of bottom padding cleared the descenders. On a phon
 the same line wraps to two, and the clip box — sized to the text — cut the second
 row.
 
-**Fix:** `0.14em`, plus the eyebrow's second phrase is dropped below `sm` rather
-than allowed to wrap into three ragged lines at 0.22em tracking.
+**Fix:** more bottom padding on the clip box, plus the eyebrow's second phrase
+is dropped below `sm` rather than allowed to wrap into three ragged lines at
+0.22em tracking.
+
+**Then it got worse.** Switching the headings to Instrument Serif deepened the
+descenders — Next reports the face at 36.9% below baseline against Inter's
+22.5% — and `0.14em` started shaving the `y` of "you." at *every* width, not
+just narrow ones. Raising it to `0.2em` fixed the clipping and opened a visible
+gap between the two stacked headline lines, because that padding is real layout
+space. The answer was `padding-bottom: 0.2em` with `margin-bottom: -0.15em`:
+the clip box stays tall enough for the descenders, and the next line is pulled
+back up through padding that is empty by construction.
 
 **Cost:** ~10 minutes, found by screenshotting the page at 390px rather than by
 assuming it was fine.
@@ -1255,6 +1265,116 @@ the opposite one, elements that start at `opacity: 0` and never animate to
 visible. They resolve correctly because the reveals are animations with
 `fill-mode: both`, not transitions: the reduced-motion rule collapses the
 duration but the end state still applies.
+
+---
+
+## 28. A timestamp Postgres calls ISO-8601 that JavaScript calls Invalid Date
+
+**When:** Milestone 10, building the Incrementality Lab's cumulative chart.
+
+**Symptom:** the chart drew correctly — three lines, right shape, right values —
+and both x-axis labels read `—`. Nothing threw, nothing logged, and the page
+looked finished.
+
+**Diagnosis:** `/api/metrics/timeseries` formatted its bucket with Postgres's
+`OF` offset pattern:
+
+```sql
+to_char(date_bin(...), 'YYYY-MM-DD"T"HH24:MI:SSOF')   -- 2026-09-03T10:00:00+00
+```
+
+`OF` emits only as much of the offset as it needs, so a zero-minute offset comes
+out as a bare `+00`. ISO-8601 requires `+00:00` or `Z`, and V8 agrees:
+`new Date('2026-09-03T10:00:00+00')` is `Invalid Date`. My `istLabel` helper
+guarded with `Number.isNaN(d.getTime())` and returned `—`, which is the correct
+behaviour for a bad date and the reason nobody would ever find this. Everything
+downstream of the *sort* still worked, because sorting the strings
+lexicographically happens to be right.
+
+The API's own contract said this was wrong: the project convention is
+"timestamps ISO-8601 with offset", and `+00` is not.
+
+**Fix:** pin the bucket to UTC and write a literal `Z`, which is unambiguous
+whatever the server's `TimeZone` is set to:
+
+```sql
+to_char(date_bin(...) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+```
+
+Fixed at the source rather than normalised in the chart, so every future
+consumer of the endpoint gets a parseable timestamp instead of inheriting the
+bug and writing its own patch.
+
+**Cost:** ~10 minutes, found by looking at a screenshot.
+**What it means:** the third time on this project that a defect surfaced as a
+plausible-looking placeholder rather than an error — an em-dash is exactly what
+an empty axis is supposed to look like. It was found by rendering the page and
+looking at it, which is the only technique that has ever caught this class here.
+
+---
+
+## 29. A disclosure that quietly stopped being true
+
+**When:** Milestone 10, an hour after writing the Lab's provenance banner.
+
+**Symptom:** the banner is the most important thing on the Incrementality Lab —
+it says the corpus is synthetic and that the lift is a planted treatment
+response being recovered, not evidence a message caused a payment. It rendered
+the *milder* half of its wording, and I only noticed because I was diffing a
+screenshot against what I had written.
+
+**Diagnosis:** I had keyed the strong wording on a binary:
+
+```ts
+const nothingSent = provenance.messages_sent === 0 && provenance.attempts > 0;
+```
+
+When I wrote it, `messages` had zero rows. While I was building the rest of the
+screen the Inngest queue drained its first five attempts, `messages_sent` became
+5, and the banner silently switched to a softer sentence — on a corpus where
+1,667 of 1,672 attempts still had not been delivered. The threshold was doing
+the reasoning, and nothing was watching the threshold.
+
+**Fix:** the banner no longer branches. It states the counts and lets the reader
+draw the line: *1,672 recovery attempts planned · 5 delivered (0.3%) · 5 messages
+sent to a real channel.* The interpretation above it is unconditional, because on
+a synthetic corpus it is true regardless of how many messages went out — the
+recoveries were decided by the generator's uniform draw, not by delivery.
+
+**Cost:** ~10 minutes.
+**What it means:** a caveat with a condition on it is a caveat that can turn
+itself off. The same shape as #19 and #20 — a claim that stays legible while
+quietly ceasing to be accurate — except this time the claim was the honesty
+disclosure itself, which is the worst possible place for it. Disclosures get
+counts, not conditionals.
+
+---
+
+## 30. `next build` while `next dev` was running, and the page came back unstyled
+
+**When:** Milestone 10, screenshotting the two new screens.
+
+**Symptom:** `/lab` rendered as raw unstyled HTML — correct content, correct
+copy, no CSS whatsoever. Then the production server I started to work around it
+died with `Cannot find module './vendor-chunks/@opentelemetry.js'`.
+
+**Diagnosis:** `next dev` and `next build` share `.next/`. Running the build
+against a directory a dev server was actively serving from left both processes
+reading half of each other's output. The dev server's stylesheet 404'd —
+`/_next/static/css/app/layout.css` returned 9 bytes of nothing — while the HTML
+still linked to it, so the browser got a complete page with no styles and no
+console error worth noticing.
+
+**Fix:** stop the dev server, `rm -rf .next`, restart. Both screenshots were
+retaken against a clean server.
+
+**Cost:** ~15 minutes and two screenshots that showed nothing useful.
+**What it means:** the first two screenshots were not evidence, and I nearly
+read them as "the CSS is broken" and started debugging Tailwind. The tell was
+that the *content* was perfect — a styling bug that leaves every element in
+place and every string correct is usually not a styling bug. Also worth
+recording because the user's dev server was collateral damage: builds and dev
+servers do not share a working directory.
 
 ---
 
@@ -1290,11 +1410,13 @@ interface. Correctness is identical; latency is worse; the swap is one file.
 events, which a 3,000-event batch cannot reach. Reported as a caveat on the
 result itself. See #9.
 
-**Triage thresholds are untuned.** `n ≥ 8`, `3σ`, `0.25` absolute floor, EWMA
-`α = 0.3` are the blueprint's starting guesses, sitting in
-`src/core/triage/config.ts`. They are not yet tuned against the generator's
-injected outage, and the bar they have to clear — precision *and* recall above
-0.8 — has not been measured yet.
+**Triage thresholds are tuned, and the binding constraint is volume.** This
+entry used to say they were untuned guesses; they are not, as of #22. `n ≥ 16`,
+`3σ`, `0.30` absolute floor, tuned by `npm run tune:triage` against four volume
+scenarios and scored at the *worst* of the four rather than the average. The
+sigma multiplier is inert at this scale — the absolute floor binds first — which
+is stated here rather than left to be discovered. Both precision and recall clear
+0.8 on every scenario; the tightest is the brief-outage case at P 84.7 / R 81.3.
 
 **Bank holidays are a national list, not RBI's state-wise one.** See #5 above.
 

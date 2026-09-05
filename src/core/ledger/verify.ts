@@ -18,7 +18,8 @@
 import { asc } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { auditLedger } from '@/db/schema';
-import { GENESIS_PREV_HASH, chainHash } from './canonical';
+import { GENESIS_PREV_HASH } from './canonical';
+import { chainHash } from './chain';
 import { hashedPayload } from './append';
 
 export type BreakKind = 'bad_genesis' | 'broken_link' | 'content_edit';

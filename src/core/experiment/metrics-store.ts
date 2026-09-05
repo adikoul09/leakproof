@@ -158,7 +158,14 @@ export async function metricsTimeseries(
 ): Promise<TimeseriesPoint[]> {
   const rows = await db
     .select({
-      bucket: raw<string>`to_char(date_bin(${`${bucketMinutes} minutes`}::interval, ${paymentEvents.failedAt}, timestamptz '2020-01-01'), 'YYYY-MM-DD"T"HH24:MI:SSOF')`,
+      /**
+       * `OF` emits a bare `+00` when the offset has no minutes, and
+       * `2026-09-03T10:00:00+00` is not valid ISO-8601 — `new Date()` returns
+       * Invalid Date on it, so the chart's axis silently rendered em-dashes.
+       * Pinning the bucket to UTC and writing a literal `Z` is unambiguous
+       * whatever the server's TimeZone happens to be set to.
+       */
+      bucket: raw<string>`to_char(date_bin(${`${bucketMinutes} minutes`}::interval, ${paymentEvents.failedAt}, timestamptz '2020-01-01') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
       arm: armAssignments.arm,
       n: raw<number>`count(*)::int`,
       recovered: raw<number>`count(*) filter (where ${paymentEvents.recoveredAt} is not null)::int`,

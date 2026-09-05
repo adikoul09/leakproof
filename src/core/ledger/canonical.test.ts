@@ -4,9 +4,9 @@ import {
   GENESIS_PREV_HASH,
   NonCanonicalValueError,
   canonicalString,
-  chainHash,
   toCanonical,
 } from './canonical';
+import { chainHash } from './chain';
 
 describe('canonicalString', () => {
   it('is insensitive to key insertion order, at every depth', () => {

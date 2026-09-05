@@ -70,6 +70,10 @@ export async function GET(req: Request) {
         policy_version: r.policyVersion,
         gate_result: r.gateResult,
         arm: r.arm,
+        // Part of the hashed payload, so it has to be here: without it the
+        // Ledger screen cannot recompute a row's hash in the browser, and the
+        // chain becomes something the server merely asserts.
+        llm_prompt_hash: r.llmPromptHash,
         action: r.action,
         outcome: r.outcome,
         cost_paise: r.costPaise,

@@ -19,6 +19,8 @@ export interface MetricsSummary {
   >;
   incremental_paise: number;
   ci95_paise: [number, number];
+  /** The blueprint's simpler decomposition, shown beside it on the lab. */
+  incremental_paise_rate_times_mean: number;
   lift_vs_control_pp: number;
   lift_vs_control_ci95_pp: [number, number];
   lift_vs_naive_pp: number;

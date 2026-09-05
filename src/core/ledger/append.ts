@@ -24,7 +24,8 @@ import { sql as raw } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { auditLedger } from '@/db/schema';
 import type { Arm } from '@/core/experiment/assign';
-import { GENESIS_PREV_HASH, chainHash } from './canonical';
+import { GENESIS_PREV_HASH } from './canonical';
+import { chainHash } from './chain';
 
 /** Arbitrary but fixed. Any other advisory lock in the app must not reuse it. */
 const LEDGER_LOCK_KEY = 0x1eadbeef;

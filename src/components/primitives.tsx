@@ -188,14 +188,20 @@ export function Empty({ message, action }: { message: string; action?: ReactNode
 }
 
 /**
- * The two screens of the console, addressed the same way from both of them.
+ * The screens of the console, addressed the same way from all of them.
  * Small thing, but before this the only way from /replay back to /tower was a
  * text link in the corner and there was no way to reach /replay from /tower at
  * all — the judge had to type the URL.
+ *
+ * Ordered the way the argument is made rather than the way the screens were
+ * built: what is happening now, what it added, what it can be checked against,
+ * what would have happened instead.
  */
-export function ConsoleNav({ active }: { active: 'tower' | 'replay' }) {
+export function ConsoleNav({ active }: { active: 'tower' | 'lab' | 'ledger' | 'replay' }) {
   const items = [
     { href: '/tower', key: 'tower', label: 'Control tower' },
+    { href: '/lab', key: 'lab', label: 'Incrementality lab' },
+    { href: '/ledger', key: 'ledger', label: 'Audit ledger' },
     { href: '/replay', key: 'replay', label: 'Replay & what-if' },
   ] as const;
   return (
