@@ -46,7 +46,17 @@ interface Scorecard {
   note: string;
 }
 
+interface BreakerScope {
+  scope: string;
+  state: string;
+  reason: string | null;
+  opened_at: string | null;
+}
+
 type Filter = 'all' | 'open' | 'closed';
+
+/** The API rejects anything shorter; the UI should say so before the round trip. */
+const MIN_REASON = 10;
 
 const inputStyle = {
   background: 'var(--bg-surface-2)',
@@ -75,6 +85,11 @@ export function RadarClient() {
   const [detecting, setDetecting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const [breaker, setBreaker] = useState<BreakerScope[] | null>(null);
+  const [breakerOpen, setBreakerOpen] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
+  const [overriding, setOverriding] = useState(false);
+
   const load = useCallback(async () => {
     try {
       const res = await fetch('/api/outages');
@@ -89,9 +104,30 @@ export function RadarClient() {
     }
   }, []);
 
+  /**
+   * Breaker state comes from `/api/status`, which is the only read path for it —
+   * the override endpoint is POST-only. Fetched separately from the windows so
+   * a slow status call does not hold up the table.
+   */
+  const loadBreaker = useCallback(async () => {
+    try {
+      const res = await fetch('/api/status?window_minutes=60');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      setBreaker(body.breaker ?? []);
+      setBreakerOpen(Boolean(body.breaker_open));
+    } catch {
+      // Non-fatal: the windows table is the screen's subject, the breaker panel
+      // is beside it. It shows its own unavailable state rather than blanking
+      // the page.
+      setBreaker([]);
+    }
+  }, []);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadBreaker();
+  }, [load, loadBreaker]);
 
   const runDetection = useCallback(async () => {
     setDetecting(true);
@@ -112,6 +148,35 @@ export function RadarClient() {
       setDetecting(false);
     }
   }, [operatorKey, load]);
+
+  const override = useCallback(
+    async (action: 'open' | 'close') => {
+      setOverriding(true);
+      setNotice(null);
+      setError(null);
+      try {
+        const res = await fetch('/api/breaker/override', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${operatorKey}` },
+          body: JSON.stringify({ scope: 'global', action, reason: overrideReason }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+        setNotice(
+          body.warning
+            ? `Breaker ${action}d, but ${body.warning}`
+            : `Breaker ${action}d. Written to the ledger at seq ${body.ledger_seq ?? '—'}.`,
+        );
+        setOverrideReason('');
+        await loadBreaker();
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setOverriding(false);
+      }
+    },
+    [operatorKey, overrideReason, loadBreaker],
+  );
 
   const rows = (windows ?? []).filter((w) =>
     filter === 'all' ? true : filter === 'open' ? w.open : !w.open,
@@ -314,22 +379,52 @@ export function RadarClient() {
         </Panel>
 
         <div className="flex flex-col gap-2">
+          {/*
+            One key input for both write actions on this screen. Two separate
+            boxes for the same credential is the kind of thing that gets typed
+            into the wrong one under demo pressure.
+          */}
+          <Panel title="Operator key" bodyClassName="p-3 flex flex-col gap-1.5">
+            <input
+              type="password"
+              value={operatorKey}
+              onChange={(e) => setOperatorKey(e.target.value)}
+              placeholder="OPERATOR_ACCESS_KEY"
+              aria-label="Operator key"
+              className="mono rounded-sm px-2 py-1.5"
+              style={inputStyle}
+            />
+            <p className="text-[11.5px] leading-[16px]" style={{ color: 'var(--text-muted)' }}>
+              ▸ Both actions below write to the ledger.{' '}
+              <code className="mono">OPERATOR_ACCESS_KEY</code> from the environment.
+            </p>
+            {notice && (
+              <p className="text-[12px] leading-[17px]" style={{ color: 'var(--success)' }}>
+                {notice}
+              </p>
+            )}
+            {error && (
+              <p className="text-[12px] leading-[17px]" style={{ color: 'var(--danger)' }}>
+                {error}
+              </p>
+            )}
+          </Panel>
+
+          <BreakerPanel
+            breaker={breaker}
+            breakerOpen={breakerOpen}
+            reason={overrideReason}
+            onReason={setOverrideReason}
+            onOverride={override}
+            busy={overriding}
+            hasKey={operatorKey.length > 0}
+          />
+
           <Panel title="Run detection now" bodyClassName="p-3 flex flex-col gap-2.5">
             <p className="text-[12px] leading-[17px]" style={{ color: 'var(--text-secondary)' }}>
               The cron runs every five minutes. This runs the same detector immediately, so a demo
               does not have to wait for it.
             </p>
-            <label className="flex flex-col gap-1">
-              <span className="label">Operator key</span>
-              <input
-                type="password"
-                value={operatorKey}
-                onChange={(e) => setOperatorKey(e.target.value)}
-                placeholder="OPERATOR_ACCESS_KEY"
-                className="mono rounded-sm px-2 py-1.5"
-                style={inputStyle}
-              />
-            </label>
             <button
               onClick={() => void runDetection()}
               disabled={detecting || !operatorKey}
@@ -344,18 +439,7 @@ export function RadarClient() {
             </button>
             {!operatorKey && (
               <p className="text-[11.5px] leading-[16px]" style={{ color: 'var(--text-muted)' }}>
-                ▸ Detection writes outage windows and calls Razorpay, so it needs the operator key.
-                It is <code className="mono">OPERATOR_ACCESS_KEY</code> from the environment.
-              </p>
-            )}
-            {notice && (
-              <p className="text-[12px]" style={{ color: 'var(--success)' }}>
-                {notice}
-              </p>
-            )}
-            {error && (
-              <p className="text-[12px] leading-[17px]" style={{ color: 'var(--danger)' }}>
-                {error}
+                ▸ Detection writes outage windows and calls Razorpay, so it needs the key above.
               </p>
             )}
           </Panel>
@@ -456,5 +540,145 @@ function Scorecards({ scorecard, loading }: { scorecard: Scorecard | null; loadi
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The circuit breaker, and the control that overrides it.
+ *
+ * This is a human switching off an automated safety control, so the screen is
+ * built around the reason rather than around the button. The API rejects a
+ * reason under ten characters and this refuses to send one — not to be
+ * awkward, but because "closed it" in an audit log six months from now is
+ * worth exactly nothing, and the person who can still remember why is the one
+ * sitting here now.
+ */
+function BreakerPanel({
+  breaker,
+  breakerOpen,
+  reason,
+  onReason,
+  onOverride,
+  busy,
+  hasKey,
+}: {
+  breaker: BreakerScope[] | null;
+  breakerOpen: boolean;
+  reason: string;
+  onReason: (v: string) => void;
+  onOverride: (action: 'open' | 'close') => void;
+  busy: boolean;
+  hasKey: boolean;
+}) {
+  const action: 'open' | 'close' = breakerOpen ? 'close' : 'open';
+  const short = reason.trim().length < MIN_REASON;
+  const remaining = MIN_REASON - reason.trim().length;
+  const openScopes = (breaker ?? []).filter((b) => b.state === 'open');
+
+  return (
+    <Panel
+      title="Circuit breaker"
+      right={
+        breaker === null ? (
+          <Badge tone="muted">reading…</Badge>
+        ) : breakerOpen ? (
+          <Badge tone="danger">open</Badge>
+        ) : (
+          <Badge tone="ok">closed</Badge>
+        )
+      }
+      bodyClassName="p-3 flex flex-col gap-2.5"
+    >
+      {breaker === null ? (
+        <div className="skeleton h-10 rounded-sm" style={{ opacity: 0.5 }} />
+      ) : openScopes.length > 0 ? (
+        openScopes.map((b) => (
+          <div key={b.scope} className="flex flex-col gap-0.5">
+            <span className="mono" style={{ color: 'var(--danger)' }}>
+              {b.scope}
+            </span>
+            <span className="text-[12px] leading-[17px]" style={{ color: 'var(--text-secondary)' }}>
+              {b.reason ?? 'no reason recorded'}
+            </span>
+            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              open since {istDateTime(b.opened_at)}
+            </span>
+          </div>
+        ))
+      ) : (
+        <p className="text-[12px] leading-[17px]" style={{ color: 'var(--text-secondary)' }}>
+          Closed on every scope. Recovery is flowing; the gate is not holding anything back on
+          breaker grounds.
+        </p>
+      )}
+
+      <label className="flex flex-col gap-1">
+        <span className="label">Reason for the override</span>
+        <textarea
+          value={reason}
+          onChange={(e) => onReason(e.target.value)}
+          rows={2}
+          placeholder={
+            action === 'close'
+              ? 'e.g. issuer confirmed recovered on their status page at 14:20'
+              : 'e.g. holding sends while we investigate a spike the detector has not caught'
+          }
+          className="w-full resize-y rounded-sm px-2 py-1.5 text-[12.5px]"
+          style={{ ...inputStyle, lineHeight: '18px' }}
+        />
+      </label>
+
+      <button
+        onClick={() => onOverride(action)}
+        disabled={busy || !hasKey || short}
+        className="cursor-pointer rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-40"
+        style={
+          action === 'close'
+            ? {
+                background: 'var(--accent-dim)',
+                border: '1px solid rgba(20,184,166,0.4)',
+                color: 'var(--accent)',
+              }
+            : {
+                background: 'rgba(240,85,79,0.13)',
+                border: '1px solid rgba(240,85,79,0.4)',
+                color: 'var(--danger)',
+              }
+        }
+      >
+        {busy
+          ? 'Writing…'
+          : action === 'close'
+            ? 'Close the breaker'
+            : 'Open the breaker (halt sends)'}
+      </button>
+
+      {/* Every disabled state on this screen states its reason. */}
+      {!hasKey ? (
+        <p className="text-[11.5px] leading-[16px]" style={{ color: 'var(--text-muted)' }}>
+          ▸ Needs the operator key above.
+        </p>
+      ) : short ? (
+        <p className="text-[11.5px] leading-[16px]" style={{ color: 'var(--text-muted)' }}>
+          ▸ {remaining} more character{remaining === 1 ? '' : 's'} of reason. An override with no
+          stated reason is exactly the thing an auditor asks about six months later, so the API
+          rejects one and this will not send it.
+        </p>
+      ) : null}
+
+      <p
+        className="text-[11.5px] leading-[16px]"
+        style={{ color: 'var(--text-muted)', borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}
+      >
+        ▸ The override is appended to the audit ledger as{' '}
+        {/* Not `breaker_{action}d` — that renders "opend". These are the two
+            literal action names the route appends. */}
+        <span className="mono">
+          {action === 'close' ? 'breaker_closed_by_operator' : 'breaker_opened_by_operator'}
+        </span>{' '}
+        with your reason and identity —
+        the same hash chain as every automated decision, with no separate path for human ones.
+      </p>
+    </Panel>
   );
 }
