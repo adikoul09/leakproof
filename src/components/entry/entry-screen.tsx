@@ -280,7 +280,7 @@ export function EntryScreen() {
                   <span className="mono" style={{ color: 'var(--accent)' }}>
                     {p.n}
                   </span>
-                  <h3 className="text-[18px]">{p.title}</h3>
+                  <h3 className="text-[21px] leading-[1.15]">{p.title}</h3>
                   <p
                     className="flex-1 text-[13.5px] leading-[22px]"
                     style={{ color: 'var(--text-secondary)' }}
@@ -308,7 +308,7 @@ export function EntryScreen() {
               }}
             >
               <div className="max-w-[54ch]">
-                <h3 className="text-[22px]">
+                <h3 className="text-[26px] leading-[1.15]">
                   The console is live. Go and pull it apart.
                 </h3>
                 <p className="mt-1.5 text-[13.5px]" style={{ color: 'var(--text-secondary)' }}>

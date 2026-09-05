@@ -276,10 +276,18 @@ body {
 .line-mask {
   display: block;
   overflow: hidden;
-  /* Display type wraps on narrow screens, and the clip box has to clear the
-     final line's descenders — at 0.08em the bottom of a wrapped line was being
-     shaved on a 390px viewport. */
+  /*
+   * The clip box has to clear the final line's descenders or the reveal shaves
+   * them — Instrument Serif's are deep (36.9% below baseline), and a wrapped
+   * line on a 390px viewport put the worst case inside the box.
+   *
+   * But that padding is real space, and stacked mask lines were opening a
+   * visible gap between them. The negative margin pulls the next line back up
+   * through padding that is empty by construction, so the clip box stays tall
+   * and the leading stays tight.
+   */
   padding-bottom: 0.2em;
+  margin-bottom: -0.15em;
 }
 .line-mask > span {
   display: block;
