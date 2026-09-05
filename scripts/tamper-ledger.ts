@@ -8,13 +8,28 @@
  * attacker with database access would — and verifies again. A chain that only
  * survives attacks nobody attempts is decoration.
  *
- * ⚠️ Destructive to the audit_ledger table. Development only.
+ * ⚠️ Destructive to the audit_ledger table: it truncates every existing
+ * receipt. Prompts for the database endpoint id first; pass --force to skip
+ * the prompt in a non-interactive context.
  */
 import { config } from 'dotenv';
+
+import { confirmDestructive } from './lib/confirm-destructive';
 
 config({ path: '.env.local' });
 
 async function main() {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error('DATABASE_URL is not set');
+
+  // This truncates audit_ledger before it rebuilds a demo chain. Run against
+  // the live database it destroys every receipt the Ledger screen shows.
+  await confirmDestructive({
+    action: 'truncate audit_ledger and rebuild it as a 5-row demonstration chain',
+    url,
+    forceFlag: '--force',
+  });
+
   const { sql } = await import('../src/db/client');
   const { appendLedger } = await import('../src/core/ledger/append');
   const { verifyChain } = await import('../src/core/ledger/verify');

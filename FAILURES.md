@@ -1614,6 +1614,75 @@ that sleeps, which in this project is all of them.
 nothing would have fired. Unrecoverable — but see #32, the cooldown had not
 lifted anyway, so the loss was of information rather than of a window.
 
+## 35. #23's fix degraded WhatsApp to "a channel that actually delivers". It does not.
+
+**What broke:** #23 caught the WhatsApp rail creating a payment link and telling
+nobody, and fixed it by degrading WhatsApp to SMS — "the same phone number, a
+channel that actually delivers". That last clause is false, and the audit that
+found it was asking a different question: does the composed message reach anyone
+at all?
+
+**The code path, end to end.** `createPaymentLink` is called with
+`notify: { sms: channel === 'sms', email: channel === 'email' }` and **no
+`customer` object** — the call passes `amountPaise`, `currency`, `description`,
+`notify`, `referenceId`, `expireBy`, `notes`, and nothing else. Razorpay's
+notification needs a customer contact or email to send to. Without one it has
+no address, so `notify: { sms: true }` instructs it to notify nobody.
+
+This is not inference. Every link the pipeline has created is still on the
+account and says so:
+
+```
+id=plink_TYBwRVZl5NDJlc  customer=[]  notify={"email":false,"sms":true,"whatsapp":false}
+id=plink_TYBwR03PoffpEu  customer=[]  notify={"email":true,"sms":false,"whatsapp":false}
+```
+
+`customer` is empty on all of them. The flag is set; the recipient is not.
+
+**And the composed copy is never transmitted on any rail.** `composed.body`
+appears exactly once in the codebase — `recovery-execute.ts:309`, the
+`db.insert(messages)` call. It goes into a column and nowhere else. There is no
+SMS or email client in the repo; `src/core/rails/` holds `razorpay.ts` and
+`whatsapp.ts` and nothing more. Even the WhatsApp branch, the one rail that
+sends anything itself, calls `sendTemplate` with a Meta pre-approved template
+name and the variables `[MERCHANT_NAME, ₹amount]` — not the Gemini text. So
+there is no configuration of this system in which a customer reads what the
+model wrote.
+
+**What gets recorded anyway.** `messages` is inserted with `sent_at` set, the
+event moves to `action_sent`, and a ledger receipt is appended. On the five
+attempts that have executed:
+
+```
+messages: total=5  marked_sent=5  with_provider_id=0
+audit_ledger: action_sent receipts = 5
+```
+
+`provider_message_id` is the only field that tells the truth — it is non-null
+only for a real WhatsApp send, and WhatsApp is unconfigured
+(`WHATSAPP_TOKEN` and `WHATSAPP_PHONE_NUMBER_ID` are both unset), so
+`effectiveChannel` degrades every `whatsapp_nudge` to SMS and that branch never
+runs. Five sends recorded, five customers uncontacted, zero provider ids.
+
+**What it means for the system:** #23 correctly identified that an uncontacted
+customer counted as contacted converts a treated event into an untreated one and
+biases incrementality toward zero. That diagnosis was right and its scope was
+too narrow — it treated the defect as specific to WhatsApp when it belongs to
+the notification design shared by every rail. The incrementality result is not
+invalidated, because the recovery outcomes in the corpus are synthetic and were
+never conditioned on a real send; but the claim "we sent the customer this
+message" is not supported by anything in the database, and the payment links —
+which are real, live Razorpay objects with working `short_url`s — are the only
+part of the send that exists.
+
+**Fix:** not attempted tonight. Attaching a `customer` object means holding a
+raw phone or email, and the system deliberately stores only a sha256 and a
+display mask; that is a design decision, not an oversight, and reversing it
+hours before a demo to make a send real would be the wrong trade. What changes
+now is what gets claimed: the links are real, the composition is real Gemini
+output, and delivery is not wired. `provider_message_id` already distinguishes
+the two and should be what the Ledger screen reads.
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.
