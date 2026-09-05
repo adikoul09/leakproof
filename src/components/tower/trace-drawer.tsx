@@ -199,6 +199,13 @@ function RuleChecklist({ trace }: { trace: unknown }) {
 export function TraceDrawer({ eventId, onClose }: { eventId: string | null; onClose: () => void }) {
   const [trace, setTrace] = useState<Trace | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * "Copy trace as JSON" wrote to the clipboard and said nothing. On a button
+   * whose entire effect is invisible, that is indistinguishable from a dead
+   * control — and `navigator.clipboard` is undefined outside a secure context,
+   * so it really can silently do nothing.
+   */
+  const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle');
 
   useEffect(() => {
     if (!eventId) return;
@@ -537,17 +544,41 @@ export function TraceDrawer({ eventId, onClose }: { eventId: string | null; onCl
 
               <div className="flex gap-2 pb-2">
                 <button
-                  onClick={() => navigator.clipboard?.writeText(JSON.stringify(trace, null, 2))}
-                  className="cursor-pointer rounded-sm px-2.5 py-1 text-[12px]"
-                  style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+                  onClick={() => {
+                    const write = navigator.clipboard?.writeText(JSON.stringify(trace, null, 2));
+                    if (!write) {
+                      setCopied('failed');
+                      setTimeout(() => setCopied('idle'), 2000);
+                      return;
+                    }
+                    void write.then(
+                      () => {
+                        setCopied('done');
+                        setTimeout(() => setCopied('idle'), 2000);
+                      },
+                      () => {
+                        setCopied('failed');
+                        setTimeout(() => setCopied('idle'), 2000);
+                      },
+                    );
+                  }}
+                  className="press cursor-pointer rounded-sm px-2.5 py-1 text-[12px] transition-colors duration-200 hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+                  style={{
+                    border: '1px solid var(--border-strong)',
+                    color: copied === 'failed' ? 'var(--danger)' : copied === 'done' ? 'var(--accent)' : 'var(--text-secondary)',
+                  }}
                 >
-                  Copy trace as JSON
+                  {copied === 'done'
+                    ? 'Copied ✓'
+                    : copied === 'failed'
+                      ? 'Clipboard unavailable'
+                      : 'Copy trace as JSON'}
                 </button>
                 <a
                   href={`/api/events/${encodeURIComponent(eventId)}/trace`}
                   target="_blank"
                   rel="noreferrer"
-                  className="cursor-pointer rounded-sm px-2.5 py-1 text-[12px]"
+                  className="press cursor-pointer rounded-sm px-2.5 py-1 text-[12px] transition-colors duration-200 hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
                   style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
                 >
                   Open raw JSON

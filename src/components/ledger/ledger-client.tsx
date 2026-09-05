@@ -204,7 +204,7 @@ export function LedgerClient({
         <ConsoleNav active="ledger" />
         <a
           href="/api/ledger/export.csv"
-          className="ml-auto rounded-[6px] px-2.5 py-1 text-[12.5px]"
+          className="press ml-auto rounded-[6px] px-2.5 py-1 text-[12.5px] transition-colors duration-200 hover:bg-[var(--accent-dim)]"
           style={{ color: 'var(--accent)', border: '1px solid rgba(20,184,166,0.3)' }}
         >
           Export CSV ↓
@@ -271,8 +271,13 @@ export function LedgerClient({
           />
         </label>
         <span className="ml-auto text-[11.5px]" style={{ color: 'var(--text-muted)' }}>
-          {rows.length.toLocaleString('en-IN')} row{rows.length === 1 ? '' : 's'} loaded
-          {cursor !== null ? ', more available' : ''}
+          {/* "0 rows loaded" while the first page is still in flight reads as
+              "the chain is empty", which is the opposite of true. */}
+          {loading
+            ? 'Loading records…'
+            : `${rows.length.toLocaleString('en-IN')} row${rows.length === 1 ? '' : 's'} loaded${
+                cursor !== null ? ', more available' : ''
+              }`}
         </span>
       </Panel>
 
@@ -339,7 +344,7 @@ export function LedgerClient({
           <div className="p-2">
             <button
               onClick={() => void loadMore()}
-              className="w-full cursor-pointer rounded-sm py-1.5 text-[12.5px]"
+              className="w-full cursor-pointer rounded-sm py-1.5 text-[12.5px] transition-colors duration-200 hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
               style={{ background: 'var(--bg-surface-2)', color: 'var(--text-secondary)' }}
             >
               Load 50 more
@@ -418,7 +423,7 @@ function ChainHeader({
         <button
           onClick={onVerify}
           disabled={verifying}
-          className="ml-auto cursor-pointer rounded-sm px-3 py-1.5 text-[12.5px] font-medium disabled:cursor-not-allowed disabled:opacity-40"
+          className="ml-auto cursor-pointer rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors duration-200 hover:bg-[rgba(20,184,166,0.2)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[var(--accent-dim)]"
           style={{
             background: 'var(--accent-dim)',
             border: '1px solid rgba(20,184,166,0.4)',
@@ -448,8 +453,22 @@ function ChainHeader({
 function RowPair({ row, open, onToggle }: { row: LedgerRow; open: boolean; onToggle: () => void }) {
   return (
     <>
+      {/*
+        Matches the tower's queue rows. These were pointer-only: the whole
+        point of the screen is that a reader can open a record and recompute
+        its hash, and that was unreachable without a mouse.
+      */}
       <tr
+        tabIndex={0}
+        role="button"
+        aria-expanded={open}
         onClick={onToggle}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
         className="cursor-pointer transition-colors duration-200 hover:bg-[var(--bg-hover)]"
         style={{
           borderBottom: `1px solid var(--border-subtle)`,

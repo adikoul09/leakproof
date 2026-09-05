@@ -300,16 +300,17 @@ export function ReplayClient() {
           <div className="flex flex-col gap-1.5">
             <span className="label">Flags</span>
             <label className="flex items-center gap-2 text-[12.5px]" style={{ color: 'var(--text-secondary)' }}>
-              <input type="checkbox" checked={disableLlm} onChange={(e) => setDisableLlm(e.target.checked)} />
+              <input type="checkbox" className="accent-[var(--accent)]" checked={disableLlm} onChange={(e) => setDisableLlm(e.target.checked)} />
               Disable the LLM entirely (template fallback)
             </label>
             <label className="flex items-center gap-2 text-[12.5px]" style={{ color: 'var(--text-secondary)' }}>
-              <input type="checkbox" checked={naiveRails} onChange={(e) => setNaiveRails(e.target.checked)} />
+              <input type="checkbox" className="accent-[var(--accent)]" checked={naiveRails} onChange={(e) => setNaiveRails(e.target.checked)} />
               Force naive rails (prices the routing table)
             </label>
             <label className="flex items-center gap-2 text-[12.5px]" style={{ color: 'var(--text-secondary)' }}>
               <input
                 type="checkbox"
+                className="accent-[var(--accent)]"
                 checked={tuneThresholds}
                 onChange={(e) => setTuneThresholds(e.target.checked)}
               />
@@ -368,7 +369,8 @@ export function ReplayClient() {
           <button
             onClick={run}
             disabled={busy || !operatorKey}
-            className="cursor-pointer rounded-sm px-3 py-2 text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-40"
+            title={!operatorKey ? 'Enter the operator key to enable this' : undefined}
+            className="cursor-pointer rounded-sm px-3 py-2 text-[13px] font-medium transition-colors duration-200 hover:bg-[rgba(20,184,166,0.2)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[var(--accent-dim)]"
             style={{
               background: 'var(--accent-dim)',
               border: '1px solid rgba(20,184,166,0.4)',
@@ -377,6 +379,18 @@ export function ReplayClient() {
           >
             {busy ? 'Replaying…' : 'Run replay'}
           </button>
+
+          {/*
+            The button is disabled until an operator key is typed, and said so
+            nowhere. A greyed control with no stated reason reads as broken —
+            a judge clicks it, nothing happens, and the screen has no answer.
+          */}
+          {!operatorKey && !busy && (
+            <p className="text-[11.5px] leading-[16px]" style={{ color: 'var(--text-muted)' }}>
+              ▸ Replay writes a run record, so it needs the operator key above.
+              It is <code className="mono">OPERATOR_ACCESS_KEY</code> from the environment.
+            </p>
+          )}
 
           {error && (
             <p className="text-[12px]" style={{ color: 'var(--danger)' }}>
@@ -400,6 +414,31 @@ export function ReplayClient() {
                 implementation — so the difference it reports is a difference in the policy, not in
                 the code.
               </p>
+              {/*
+                The empty state was one paragraph against ~750px of blank page,
+                which reads as a screen that failed to load rather than one
+                waiting for input. Naming what a run produces both fills the
+                column and tells a first-time reader what they are about to get.
+              */}
+              <ul className="mt-4 flex flex-col gap-1.5">
+                {[
+                  'Decision, contact, message and cost deltas — measured exactly from the gate',
+                  'Revenue delta — modelled, and labelled as such, because the counterfactual is unknowable',
+                  'Every decision that changed, with the clause that changed it',
+                  'Throughput for the run, so the cost of the replay itself is visible',
+                ].map((t) => (
+                  <li
+                    key={t}
+                    className="flex gap-2 text-[12.5px] leading-[19px]"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    <span style={{ color: 'var(--accent)' }} aria-hidden>
+                      ▸
+                    </span>
+                    {t}
+                  </li>
+                ))}
+              </ul>
             </Panel>
           )}
           {busy && !result && (

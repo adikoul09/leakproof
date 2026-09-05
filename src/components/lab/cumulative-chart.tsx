@@ -96,6 +96,7 @@ export function CumulativeChart({
   bucket,
   onBucketChange,
   loading,
+  error = null,
 }: {
   points: TimeseriesPoint[];
   mode: ChartMode;
@@ -103,6 +104,8 @@ export function CumulativeChart({
   bucket: string;
   onBucketChange: (b: string) => void;
   loading: boolean;
+  /** A failed fetch, so it can be told apart from a window with nothing in it. */
+  error?: string | null;
 }) {
   const [wrapRef, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
@@ -203,8 +206,37 @@ export function CumulativeChart({
       </div>
 
       <div ref={wrapRef} className="relative w-full">
-        {loading || buckets.length === 0 ? (
+        {/*
+          Loading and empty were the same branch, so a window with no points
+          showed a shimmer that never resolved — the screen claimed to be
+          fetching something it had already finished not finding.
+        */}
+        {loading ? (
           <div className="skeleton rounded-sm" style={{ height: HEIGHT }} />
+        ) : error !== null ? (
+          <div
+            className="flex flex-col items-center justify-center gap-1 rounded-sm px-4 text-center"
+            style={{ height: HEIGHT, border: '1px dashed rgba(240,85,79,0.4)' }}
+          >
+            <p className="text-[12.5px]" style={{ color: 'var(--danger)' }}>
+              Could not load the series — {error}
+            </p>
+            <p className="text-[11.5px]" style={{ color: 'var(--text-muted)' }}>
+              This is a failed request, not an empty window. Nothing here has been measured.
+            </p>
+          </div>
+        ) : buckets.length === 0 ? (
+          <div
+            className="flex flex-col items-center justify-center gap-1 rounded-sm px-4 text-center"
+            style={{ height: HEIGHT, border: '1px dashed var(--border-subtle)' }}
+          >
+            <p className="text-[12.5px]" style={{ color: 'var(--text-secondary)' }}>
+              No events in this window.
+            </p>
+            <p className="text-[11.5px]" style={{ color: 'var(--text-muted)' }}>
+              Widen the bucket, or generate a batch — nothing has been recorded to plot.
+            </p>
+          </div>
         ) : (
           <svg
             width={width}
@@ -306,13 +338,13 @@ export function CumulativeChart({
               />
               <span style={{ color: 'var(--text-secondary)' }}>{a.label}</span>
               <span className="tnum" style={{ color: 'var(--text-primary)' }}>
-                {s ? fmt(s.values[at] ?? 0) : '—'}
+                {s && buckets.length > 0 && s.values[at] !== undefined ? fmt(s.values[at]) : '—'}
               </span>
             </span>
           );
         })}
         <span className="ml-auto text-[11.5px]" style={{ color: 'var(--text-muted)' }}>
-          {hover === null ? 'final' : istLabel(buckets[at])}
+          {buckets.length === 0 ? '—' : hover === null ? 'final' : istLabel(buckets[at])}
         </span>
       </div>
 

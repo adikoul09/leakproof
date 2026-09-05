@@ -76,6 +76,7 @@ export function LabClient({ provenance }: { provenance: CorpusProvenance }) {
   const [scorecard, setScorecard] = useState<BatchScorecard | null>(null);
   const [busy, setBusy] = useState(true);
   const [chartLoading, setChartLoading] = useState(true);
+  const [chartError, setChartError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (s: number, it: number) => {
@@ -100,10 +101,14 @@ export function LabClient({ provenance }: { provenance: CorpusProvenance }) {
 
   useEffect(() => {
     setChartLoading(true);
+    setChartError(null);
     fetch(`/api/metrics/timeseries?bucket=${bucket}`)
-      .then((r) => r.json())
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => setPoints(d.points ?? []))
-      .catch(() => setPoints([]))
+      .catch((e: Error) => {
+        setPoints([]);
+        setChartError(e.message);
+      })
       .finally(() => setChartLoading(false));
   }, [bucket]);
 
@@ -171,6 +176,7 @@ export function LabClient({ provenance }: { provenance: CorpusProvenance }) {
               bucket={bucket}
               onBucketChange={setBucket}
               loading={chartLoading}
+              error={chartError}
             />
           </Panel>
 
@@ -275,7 +281,7 @@ export function LabClient({ provenance }: { provenance: CorpusProvenance }) {
             <button
               onClick={() => void load(seed, iterations)}
               disabled={busy}
-              className="cursor-pointer rounded-sm px-3 py-1.5 text-[12.5px] font-medium disabled:cursor-not-allowed disabled:opacity-40"
+              className="cursor-pointer rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors duration-200 hover:bg-[rgba(20,184,166,0.2)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[var(--accent-dim)]"
               style={{
                 background: 'var(--accent-dim)',
                 border: '1px solid rgba(20,184,166,0.4)',

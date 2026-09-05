@@ -64,6 +64,13 @@ html,
 body {
   background: var(--bg-base);
   color: var(--text-primary);
+  /*
+   * Without this the browser draws its *light* form controls on a dark page:
+   * the replay flag checkboxes rendered as white boxes, the only unthemed
+   * elements in the console. `accent-color` alone does not fix it — that tints
+   * the checked state and leaves the unchecked box light.
+   */
+  color-scheme: dark;
 }
 
 body {

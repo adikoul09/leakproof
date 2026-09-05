@@ -34,6 +34,25 @@ interface Status {
 
 const POLL_MS = 5000;
 
+/** Holds the rail's shape while the first poll is in flight. */
+function RailSkeleton() {
+  return (
+    <>
+      {[
+        { title: 'Arms', rows: 3 },
+        { title: 'Read this with the number', rows: 2 },
+        { title: 'Failure mix', rows: 3 },
+      ].map((p) => (
+        <Panel key={p.title} title={p.title} bodyClassName="p-3 flex flex-col gap-2">
+          {Array.from({ length: p.rows }, (_, i) => (
+            <div key={i} className="skeleton h-6 rounded-sm" style={{ opacity: 0.5 }} />
+          ))}
+        </Panel>
+      ))}
+    </>
+  );
+}
+
 export function TowerClient({ initialEventId }: { initialEventId: string | null }) {
   /**
    * The drawer is URL-addressable (blueprint Screen 3: shareable), but reading
@@ -119,6 +138,8 @@ export function TowerClient({ initialEventId }: { initialEventId: string | null 
    */
   useEffect(() => {
     let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
     const tick = async () => {
       try {
         const [s, m] = await Promise.all([
@@ -135,13 +156,29 @@ export function TowerClient({ initialEventId }: { initialEventId: string | null 
         setFeedError(null);
       } catch (e) {
         if (alive) setFeedError((e as Error).message);
+      } finally {
+        /*
+         * The interval starts again only once this pass has finished.
+         *
+         * With `setInterval` the tick was fired every 5s whether or not the
+         * previous one had returned. That is fine while the API answers in
+         * ~200ms and catastrophic when it does not: at the latency this
+         * instance is currently showing, a pass takes longer than 5s, so
+         * passes stacked up, hit the browser's six-connections-per-origin
+         * limit, and queued behind each other. The console then renders
+         * skeletons *for ever* — every request is in flight, none completes,
+         * and no state is ever set. Self-scheduling caps it at one pass at a
+         * time, so the screen paints as soon as the first one lands however
+         * slow the backend is.
+         */
+        if (alive) timer = setTimeout(() => void tick(), POLL_MS);
       }
     };
+
     void tick();
-    const t = setInterval(() => void tick(), POLL_MS);
     return () => {
       alive = false;
-      clearInterval(t);
+      if (timer !== null) clearTimeout(timer);
     };
   }, [filter, loadFirstPage]);
 
@@ -237,6 +274,14 @@ export function TowerClient({ initialEventId }: { initialEventId: string | null 
           panels keep their natural height.
         */}
         <aside className="flex min-h-0 flex-col gap-2 overflow-y-auto [&>*]:shrink-0">
+          {/*
+            Every panel in this rail returns null until its data lands, so
+            before the first poll resolved the whole 360px column was simply
+            absent — not a loading state, a hole. On a fast backend nobody sees
+            it; at the latency this instance currently has, it is most of what a
+            judge sees. Placeholders keep the column's shape while it fills.
+          */}
+          {!metrics && !status && <RailSkeleton />}
           <ArmComparison metrics={metrics} />
           <Caveats metrics={metrics} />
           {status && <FailureMix mix={status.failure_mix} windowMinutes={status.window_minutes} />}
