@@ -220,7 +220,7 @@ export function RadarClient() {
         </span>
       </header>
 
-      <Scorecards scorecard={scorecard} loading={windows === null} />
+      <Scorecards scorecard={scorecard} windows={windows} loading={windows === null} />
 
       <div className="grid grid-cols-1 gap-2 xl:grid-cols-[1fr_340px]">
         <Panel
@@ -462,11 +462,19 @@ export function RadarClient() {
   );
 }
 
-function Scorecards({ scorecard, loading }: { scorecard: Scorecard | null; loading: boolean }) {
+function Scorecards({
+  scorecard,
+  windows,
+  loading,
+}: {
+  scorecard: Scorecard | null;
+  windows: OutageWindow[] | null;
+  loading: boolean;
+}) {
   if (loading) {
     return (
       <div
-        className="flex h-[88px] overflow-hidden rounded-[10px]"
+        className="flex h-[96px] overflow-hidden rounded-[10px]"
         style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)' }}
       >
         {[0, 1, 2, 3].map((i) => (
@@ -479,6 +487,25 @@ function Scorecards({ scorecard, loading }: { scorecard: Scorecard | null; loadi
 
   const cell = 'flex min-w-0 flex-1 flex-col justify-between gap-1 px-4 py-3';
   const lag = scorecard.median_detection_lead_s;
+  const rows = windows ?? [];
+  const parked = rows.reduce((sum, w) => sum + w.paise_parked, 0);
+  const parkedOpen = rows.filter((w) => w.open).reduce((sum, w) => sum + w.paise_parked, 0);
+
+  /*
+    The agreement rate is a footnote, not a headline.
+    Every window in this deployment is synthetic, so Razorpay's live feed has
+    nothing to match and the rate sits at zero by construction. Rendered as a
+    26px hero it read as a broken detector at a glance, which is the opposite
+    of what it measures. The number is still here, stated with its denominator
+    and with the reason it is zero — demoted, not hidden.
+  */
+  const agreement =
+    scorecard.agreement_rate === null
+      ? `Razorpay's feed had no opinion on any of them`
+      : scorecard.agreement_rate === 0
+        ? '0% corroborated — synthetic windows, nothing for the live feed to match'
+        : `${(scorecard.agreement_rate * 100).toFixed(0)}% corroborated by Razorpay's feed ` +
+          `(${scorecard.both} of ${scorecard.windows_feed_had_an_opinion_on})`;
 
   return (
     <div
@@ -490,43 +517,46 @@ function Scorecards({ scorecard, loading }: { scorecard: Scorecard | null; loadi
         <div className="tnum text-[26px] leading-8 font-semibold">
           {scorecard.windows.toLocaleString('en-IN')}
         </div>
-        <div className="text-[12px] leading-4" style={{ color: 'var(--text-muted)' }}>
-          {scorecard.classifier_only.toLocaleString('en-IN')} by the classifier alone
+        <div className="flex flex-col text-[12px] leading-4" style={{ color: 'var(--text-muted)' }}>
+          <span>{scorecard.classifier_only.toLocaleString('en-IN')} by the classifier alone</span>
+          <span>{agreement}</span>
         </div>
       </div>
 
       <div className={cell} style={{ borderRight: '1px solid var(--border-subtle)' }}>
-        <div className="label">Agreement with Razorpay</div>
-        <div
-          className="tnum text-[26px] leading-8 font-semibold"
-          style={{ color: scorecard.agreement_rate === null ? 'var(--text-muted)' : 'var(--text-primary)' }}
-        >
-          {scorecard.agreement_rate === null
-            ? '——'
-            : `${(scorecard.agreement_rate * 100).toFixed(0)}%`}
+        <div className="label">Value inside those windows</div>
+        <div className="tnum text-[26px] leading-8 font-semibold">
+          {rupees(parked, { compact: true })}
         </div>
         <div className="text-[12px] leading-4" style={{ color: 'var(--text-muted)' }}>
-          {/*
-            The denominator, stated. An agreement rate whose denominator is
-            hidden is the easiest number on this screen to misread.
-          */}
-          {scorecard.both} of the {scorecard.windows_feed_had_an_opinion_on} window
-          {scorecard.windows_feed_had_an_opinion_on === 1 ? '' : 's'} it had an opinion on
+          {parkedOpen === 0
+            ? 'none of it in a window still open'
+            : `${rupees(parkedOpen, { compact: true })} in a window still open`}
         </div>
       </div>
 
       <div className={cell} style={{ borderRight: '1px solid var(--border-subtle)' }}>
         <div className="label">Median detection lead</div>
-        <div
-          className="tnum text-[26px] leading-8 font-semibold"
-          style={{
-            color: lag === null ? 'var(--text-muted)' : lag > 0 ? 'var(--success)' : 'var(--text-primary)',
-          }}
-        >
-          {lag === null ? '——' : lead(lag).text}
-        </div>
+        {/*
+          A pair of em dashes at 26px reads as a loading bar, not as an absent
+          value. When no window was seen by both, say that in words.
+        */}
+        {lag === null ? (
+          <div className="text-[18px] leading-8" style={{ color: 'var(--text-muted)' }}>
+            no overlap
+          </div>
+        ) : (
+          <div
+            className="tnum text-[26px] leading-8 font-semibold"
+            style={{ color: lag > 0 ? 'var(--success)' : 'var(--text-primary)' }}
+          >
+            {lead(lag).text}
+          </div>
+        )}
         <div className="text-[12px] leading-4" style={{ color: 'var(--text-muted)' }}>
-          than the Downtime API, where both saw it
+          {lag === null
+            ? 'no window was seen by both, so there is nothing to time'
+            : 'than the Downtime API, where both saw it'}
         </div>
       </div>
 

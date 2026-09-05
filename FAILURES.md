@@ -1683,6 +1683,42 @@ now is what gets claimed: the links are real, the composition is real Gemini
 output, and delivery is not wired. `provider_message_id` already distinguishes
 the two and should be what the Ledger screen reads.
 
+## 36. A true zero read as a broken screen
+
+**What broke:** the Outage Radar led with "Agreement with Razorpay — 0%" in
+26px type, above a table where every row's Downtime API badge said
+`disagrees`. Nothing was wrong. Every outage window in this deployment is
+synthetic and injected by the generator, so Razorpay's live Payment Downtime
+feed has nothing matching them and the agreement rate is zero by construction.
+A pre-demo audit read the screen for two seconds and concluded the detector
+was broken, which is the exact opposite of what that panel measures.
+
+**Why it happened:** the tile was designed while the number was interesting.
+An agreement rate is a good headline when there is a real feed to agree with;
+in a synthetic deployment it is a constant, and a constant does not deserve
+the largest type on the screen. The denominator was already stated underneath
+— honesty was never the problem. Prominence was.
+
+**Fix:** the strip now leads with what the detector actually did — windows
+detected, and the rupees parked inside them. The agreement rate moved to the
+footnote line under the window count, with the reason it is zero stated in the
+same breath: *"0% corroborated — synthetic windows, nothing for the live feed
+to match."* Same number, same denominator, no longer the first thing an eye
+lands on. The per-row `disagrees` badges stay as they are: at row level, next
+to a specific cohort and a specific window, "the feed did not corroborate this
+one" is precisely the right claim.
+
+**The same bug, one tile over.** `median_detection_lead` renders `——` when no
+window was seen by both systems, which at 26px in muted grey is visually
+indistinguishable from the skeleton loader two seconds earlier. It now reads
+"no overlap", with "no window was seen by both, so there is nothing to time"
+underneath. An absent value and a loading value must not look alike on a
+screen whose whole job is to be read at a glance.
+
+**The general lesson:** a correct number displayed at the wrong prominence is
+a reporting bug. On an operations console the visual hierarchy is a claim
+about what matters, and a zero given hero treatment claims something is wrong.
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

@@ -201,8 +201,15 @@ export function PolicyClient({ initialVersion }: { initialVersion: string | null
         </span>
       </header>
 
-      <div className="grid grid-cols-1 gap-2 xl:grid-cols-[260px_1fr_360px]">
-        <Panel title="Versions" bodyClassName="p-0">
+      {/*
+        The three columns take the height the viewport leaves them rather than
+        the height their content happens to need. On a 1440px screen the
+        content-sized version ended two thirds of the way down and left a
+        stripe of page background under it, which reads as a screen that
+        stopped loading rather than as a console.
+      */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 xl:grid-cols-[260px_1fr_360px]">
+        <Panel title="Versions" bodyClassName="p-0 overflow-y-auto">
           {items === null ? (
             <div className="flex flex-col gap-1 p-2">
               {[0, 1, 2, 3].map((i) => (
@@ -264,7 +271,7 @@ export function PolicyClient({ initialVersion }: { initialVersion: string | null
           bodyClassName="p-3 flex flex-col gap-2 min-h-0"
         >
           {detailLoading && !detail ? (
-            <div className="skeleton rounded-sm" style={{ height: 420 }} />
+            <div className="skeleton flex-1 rounded-sm" style={{ minHeight: 320 }} />
           ) : (
             <>
               {/*
@@ -278,8 +285,8 @@ export function PolicyClient({ initialVersion }: { initialVersion: string | null
                 onChange={(e) => setDraft(e.target.value)}
                 spellCheck={false}
                 aria-label="Policy YAML source"
-                className="mono w-full resize-y rounded-sm px-3 py-2"
-                style={{ ...inputStyle, minHeight: 420, lineHeight: '20px' }}
+                className="mono w-full flex-1 resize-y rounded-sm px-3 py-2"
+                style={{ ...inputStyle, minHeight: 320, lineHeight: '20px' }}
               />
               <p className="text-[11.5px] leading-[16px]" style={{ color: 'var(--text-muted)' }}>
                 ▸ Saving validates against the policy schema and stores a new{' '}
@@ -290,7 +297,7 @@ export function PolicyClient({ initialVersion }: { initialVersion: string | null
           )}
         </Panel>
 
-        <div className="flex flex-col gap-2">
+        <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
           <Panel title="Operator actions" bodyClassName="p-3 flex flex-col gap-2.5">
             <label className="flex flex-col gap-1">
               <span className="label">Operator key</span>
@@ -365,7 +372,7 @@ export function PolicyClient({ initialVersion }: { initialVersion: string | null
 
           <ParsedSummary detail={detail} />
 
-          <Panel title="What publishing does" bodyClassName="p-3 flex flex-col gap-1.5">
+          <Panel title="What publishing does" className="flex-1" bodyClassName="p-3 flex flex-col gap-1.5">
             <p className="text-[12px] leading-[17px]" style={{ color: 'var(--text-secondary)' }}>
               The previous live version is archived in the same transaction, and the publish appends
               a <span className="mono">policy_published</span> record to the audit ledger with the

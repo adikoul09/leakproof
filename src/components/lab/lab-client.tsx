@@ -581,6 +581,23 @@ function PowerPanel({ metrics }: { metrics: MetricsSummary | null }) {
 }
 
 /**
+ * How far outside its own interval the planted figure sits, as a fraction of
+ * the interval's width. Null when the interval covers it or has no width to
+ * measure against. Width, not rupees: a wide interval that misses by ₹200 is a
+ * far smaller result than a narrow one that misses by the same ₹200.
+ */
+function intervalMiss(ci: [number, number], planted: number): number | null {
+  const [lo, hi] = ci;
+  const width = hi - lo;
+  if (width <= 0) return null;
+  const gap = Math.max(lo - planted, planted - hi);
+  return gap <= 0 ? null : gap / width;
+}
+
+/** Below this fraction of the interval width, a miss is reported as marginal. */
+const MARGINAL_MISS = 0.01;
+
+/**
  * The estimator scored against ground truth.
  *
  * Every other panel measures the pipeline. This one measures the measurement:
@@ -602,13 +619,41 @@ function Scorecard({
   if (!inc && !det) return null;
   const batchLabel = scorecard?.batch?.label ?? null;
 
+  /*
+    A miss and a near-miss are not the same failure.
+    An interval that excludes the planted figure by a hundredth of its own
+    width is a coverage result behaving exactly as a 95% interval should —
+    one run in twenty lands outside. An interval that excludes it by half its
+    width is a broken estimator. Rendering both in hard red flattens that
+    distinction and overstates the second-worst thing on this screen, so a gap
+    under 1% of the interval width is reported as marginal.
+  */
+  const miss = inc ? intervalMiss(inc.ci95_paise, inc.planted_incremental_paise) : null;
+  const verdict =
+    !inc || inc.interval_covers_truth
+      ? { tone: 'ok' as const, text: 'Interval covers truth', why: undefined }
+      : miss !== null && miss < MARGINAL_MISS
+        ? {
+            tone: 'warn' as const,
+            text: 'Interval marginal',
+            why: `The planted figure sits ${(miss * 100).toFixed(2)}% of the interval's own width outside it — a near-miss, not a divergence.`,
+          }
+        : {
+            tone: 'danger' as const,
+            text: 'Interval misses truth',
+            why:
+              miss === null
+                ? undefined
+                : `The planted figure sits ${(miss * 100).toFixed(1)}% of the interval's own width outside it.`,
+          };
+
   return (
     <Panel
       title={`Planted vs measured${batchLabel ? ` · ${batchLabel}` : ''}`}
       right={
         inc ? (
-          <Badge tone={inc.interval_covers_truth ? 'ok' : 'danger'}>
-            {inc.interval_covers_truth ? 'Interval covers truth' : 'Interval misses truth'}
+          <Badge tone={verdict.tone} title={verdict.why}>
+            {verdict.text}
           </Badge>
         ) : null
       }

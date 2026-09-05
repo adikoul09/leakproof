@@ -42,6 +42,23 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body
         className={`${inter.variable} ${instrumentSerif.variable} ${plexMono.variable} antialiased`}
       >
+        {/*
+          A dense operations console, told honestly.
+          The layouts below are built for 1280px and up and were never adapted
+          for a phone — rupee figures truncate and the console nav overflows.
+          Saying so in one line is more use to someone who opens the link on a
+          phone than letting them scroll a broken grid and guess.
+        */}
+        <div
+          className="px-3 py-1.5 text-center text-[11.5px] sm:hidden"
+          style={{
+            background: 'var(--bg-surface-2)',
+            borderBottom: '1px solid var(--border-subtle)',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          Best viewed on desktop.
+        </div>
         {children}
       </body>
     </html>
