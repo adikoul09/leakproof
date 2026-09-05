@@ -177,7 +177,6 @@ export function TowerClient({ initialEventId }: { initialEventId: string | null 
         </Link>
         <ConsoleNav active="tower" />
         <Badge tone="warn">{status?.mode === 'live' ? 'LIVE MODE' : 'TEST MODE'}</Badge>
-        <Badge tone="muted">Synthetic data</Badge>
 
         <span className="ml-auto flex items-center gap-3">
           {feedError && (

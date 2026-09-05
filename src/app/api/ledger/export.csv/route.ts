@@ -5,7 +5,7 @@
  * auditor's export must not be limited by the server's memory. Includes
  * prev_hash and hash so the export can be verified independently of this app.
  */
-import { asc } from 'drizzle-orm';
+import { asc, gt } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { auditLedger } from '@/db/schema';
 
@@ -32,15 +32,18 @@ export async function GET() {
       const encoder = new TextEncoder();
       controller.enqueue(encoder.encode(`${COLUMNS.join(',')}\n`));
 
-      let offset = 0;
+      // Keyset, for the same reason `verifyChain` uses it: OFFSET makes an
+      // export of the whole chain quadratic in its length, and this endpoint
+      // exists precisely for the case where the chain is large.
+      let afterSeq = -1;
       try {
         for (;;) {
           const page = await db
             .select()
             .from(auditLedger)
+            .where(gt(auditLedger.seq, afterSeq))
             .orderBy(asc(auditLedger.seq))
-            .limit(PAGE)
-            .offset(offset);
+            .limit(PAGE);
           if (page.length === 0) break;
 
           for (const r of page) {
@@ -56,8 +59,8 @@ export async function GET() {
             );
           }
 
+          afterSeq = page[page.length - 1].seq;
           if (page.length < PAGE) break;
-          offset += PAGE;
         }
         controller.close();
       } catch (err) {

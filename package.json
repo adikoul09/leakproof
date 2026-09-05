@@ -22,7 +22,8 @@
     "ledger:tamper": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/tamper-ledger.ts",
     "tune:triage": "tsx scripts/tune-triage.ts",
     "simulate": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/simulate.ts",
-    "reclassify": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/reclassify.ts"
+    "reclassify": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/reclassify.ts",
+    "webhook:register": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/register-webhook.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "src/app/api/ledger/verify/route.ts": { "maxDuration": 60 },
+    "src/app/api/ledger/export.csv/route.ts": { "maxDuration": 60 },
+    "src/app/api/metrics/summary/route.ts": { "maxDuration": 60 },
+    "src/app/api/simulator/generate/route.ts": { "maxDuration": 60 },
+    "src/app/api/replay/route.ts": { "maxDuration": 60 },
+    "src/app/api/inngest/route.ts": { "maxDuration": 60 },
+    "src/app/api/stream/route.ts": { "maxDuration": 60 }
+  }
+}
