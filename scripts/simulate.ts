@@ -31,7 +31,7 @@ const rupees = (paise: number) =>
 
 async function main() {
   const { generateBatch } = await import('../src/core/simulator/generate');
-  const { PRESETS } = await import('../src/core/simulator/presets');
+  const { PRESETS, batchLabel } = await import('../src/core/simulator/presets');
   const { ingestBatch } = await import('../src/core/ingest/ingest-batch');
   const { applyOptOuts, completeBatch, createBatch, recordPlan, recordProgress } = await import(
     '../src/core/simulator/store'
@@ -107,7 +107,7 @@ async function main() {
     return;
   }
 
-  const batchId = await createBatch(batch.spec, preset.label);
+  const batchId = await createBatch(batch.spec, batchLabel(preset, spec.count));
   console.log(`\nbatch ${batchId}`);
   await recordPlan(batchId, batch);
   await applyOptOuts(batch.optedOutCustomers, new Date(s.windowStart));

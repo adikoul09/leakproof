@@ -22,6 +22,9 @@ export interface CorpusProvenance {
   events: number;
   /** Events carrying a `batch_id` — i.e. produced by the generator. */
   synthetic_events: number;
+  /** Every completed batch, not just the ones listed below. */
+  batch_count: number;
+  /** The most recent few, newest first. */
   batches: Array<{ id: string; label: string | null; n_accepted: number }>;
   /** Recovery attempts the pipeline created. */
   attempts: number;
@@ -37,7 +40,7 @@ export async function corpusProvenance(w: MetricsWindow = {}): Promise<CorpusPro
   if (w.to) parts.push(lte(paymentEvents.failedAt, w.to));
   const where = parts.length ? and(...parts) : undefined;
 
-  const [[counts], [attemptCounts], [messageCount], batches] = await Promise.all([
+  const [[counts], [attemptCounts], [messageCount], batches, [batchCount]] = await Promise.all([
     db
       .select({
         events: raw<number>`count(*)::int`,
@@ -69,11 +72,16 @@ export async function corpusProvenance(w: MetricsWindow = {}): Promise<CorpusPro
       .where(isNotNull(syntheticBatches.completedAt))
       .orderBy(raw`${syntheticBatches.createdAt} desc`)
       .limit(5),
+    db
+      .select({ n: raw<number>`count(*)::int` })
+      .from(syntheticBatches)
+      .where(isNotNull(syntheticBatches.completedAt)),
   ]);
 
   return {
     events: counts?.events ?? 0,
     synthetic_events: counts?.synthetic ?? 0,
+    batch_count: batchCount?.n ?? 0,
     batches: batches.map((b) => ({ id: b.id, label: b.label, n_accepted: b.nAccepted })),
     attempts: attemptCounts?.attempts ?? 0,
     attempts_executed: attemptCounts?.executed ?? 0,

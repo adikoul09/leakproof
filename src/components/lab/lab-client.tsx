@@ -240,7 +240,7 @@ export function LabClient({ provenance }: { provenance: CorpusProvenance }) {
 
         <div className="flex flex-col gap-2">
           <PowerPanel metrics={metrics} />
-          <Scorecard scorecard={scorecard} />
+          <Scorecard scorecard={scorecard} pooled={provenance.batch_count > 1} />
           <Panel title="Recompute" bodyClassName="p-3 flex flex-col gap-2.5">
             <p className="text-[12px] leading-[17px]" style={{ color: 'var(--text-secondary)' }}>
               The interval is a BCa bootstrap over the per-event values, not a formula applied to a
@@ -341,11 +341,21 @@ function ProvenanceBanner({ provenance }: { provenance: CorpusProvenance }) {
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <Badge tone="warn">Synthetic corpus</Badge>
+        {/*
+          Naming one batch was fine while there was one. With the corpus pooled
+          across several, "(Demo batch (9,000))" appended to a 12,000-event
+          count reads as a single batch that produced more events than it holds.
+        */}
         <span className="text-[12.5px]" style={{ color: 'var(--text-primary)' }}>
           {allSynthetic
             ? `All ${provenance.events.toLocaleString('en-IN')} events here were produced by the generator`
             : `${synthetic.toLocaleString('en-IN')} of ${provenance.events.toLocaleString('en-IN')} events here were produced by the generator`}
-          {provenance.batches[0]?.label ? ` (${provenance.batches[0].label})` : ''}.
+          {provenance.batch_count > 1
+            ? `, pooled across ${provenance.batch_count} batches (most recent: ${provenance.batches[0]?.label ?? 'unlabelled'})`
+            : provenance.batches[0]?.label
+              ? ` (${provenance.batches[0].label})`
+              : ''}
+          .
         </span>
       </div>
       <p className="text-[12px] leading-[17px]" style={{ color: 'var(--text-secondary)' }}>
@@ -560,14 +570,22 @@ function PowerPanel({ metrics }: { metrics: MetricsSummary | null }) {
  * the interval against that counterfactual is the only check here that could
  * actually fail.
  */
-function Scorecard({ scorecard }: { scorecard: BatchScorecard | null }) {
+function Scorecard({
+  scorecard,
+  pooled,
+}: {
+  scorecard: BatchScorecard | null;
+  /** True when the headline covers more than the batch scored here. */
+  pooled: boolean;
+}) {
   const inc = scorecard?.incrementality;
   const det = scorecard?.detection;
   if (!inc && !det) return null;
+  const batchLabel = scorecard?.batch?.label ?? null;
 
   return (
     <Panel
-      title="Planted vs measured"
+      title={`Planted vs measured${batchLabel ? ` · ${batchLabel}` : ''}`}
       right={
         inc ? (
           <Badge tone={inc.interval_covers_truth ? 'ok' : 'danger'}>
@@ -606,6 +624,13 @@ function Scorecard({ scorecard }: { scorecard: BatchScorecard | null }) {
               </tr>
             </tbody>
           </table>
+          {pooled && (
+            <p className="text-[11.5px] leading-[16px]" style={{ color: 'var(--warning)' }}>
+              ▸ These figures score this batch alone — ground truth exists per batch. The headline
+              above pools every batch in the window, so the two rupee figures are not the same
+              quantity and are not meant to match.
+            </p>
+          )}
           <p className="text-[11.5px] leading-[16px]" style={{ color: 'var(--text-muted)' }}>
             The point estimate is{' '}
             {inc.point_error_pct === null ? '—' : `${inc.point_error_pct.toFixed(1)}%`} from the

@@ -216,13 +216,6 @@ export function ReplayClient() {
           border: '1px solid var(--border-subtle)',
           backdropFilter: 'blur(12px)',
           WebkitBackdropFilter: 'blur(12px)',
-          // backdrop-filter opens a stacking context, which trapped the
-          // disclosure tooltips inside the header and let the KPI strip — a
-          // later sibling — paint straight over them. Lifting the whole header
-          // above its siblings is the fix; raising the tooltip's own z-index
-          // could not have worked, because it is scoped to this context.
-          position: 'relative',
-          zIndex: 30,
         }}
       >
         <Link

@@ -95,3 +95,20 @@ export const PRESETS: Record<PresetName, Preset> = {
     },
   },
 };
+
+/**
+ * The label that goes on the batch record.
+ *
+ * A preset's label carries its default size — "Demo batch (3,000)" — so a run
+ * with `--count 9000` would be filed under a name stating the wrong number.
+ * That name is not internal: the Incrementality Lab prints it beside the corpus
+ * it is measuring, so a mislabelled batch reads as a corpus three times smaller
+ * than the one the headline was computed over. Rewrite the parenthetical when
+ * the count was overridden rather than let a record disagree with its own
+ * contents.
+ */
+export function batchLabel(preset: Preset, count: number): string {
+  if (count === preset.spec.count) return preset.label;
+  const base = preset.label.replace(/\s*\([^)]*\)\s*$/, '');
+  return `${base} (${count.toLocaleString('en-IN')})`;
+}
