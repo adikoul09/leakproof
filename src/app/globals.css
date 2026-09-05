@@ -629,3 +629,80 @@ select,
 textarea {
   font-family: inherit;
 }
+
+/* --- Disclosures ---------------------------------------------------------
+ * Deliberately shares no shape with any control in the app: no border box, no
+ * filled background, no rounded rect. A dot, uppercase mono, and a dotted
+ * underline that says "there is more here" without saying "press me".
+ * ------------------------------------------------------------------------ */
+.disclosure {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: help;
+  white-space: nowrap;
+}
+.disclosure-dot {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  opacity: 0.85;
+}
+.disclosure-label {
+  font-family: var(--font-mono-stack), ui-monospace, SFMono-Regular, monospace;
+  font-size: 10.5px;
+  line-height: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px dotted currentColor;
+  padding-bottom: 1px;
+  opacity: 0.8;
+  transition: opacity var(--dur-fast) ease;
+}
+.disclosure:hover .disclosure-label,
+.disclosure:focus-within .disclosure-label {
+  opacity: 1;
+}
+
+.disclosure-tip {
+  position: absolute;
+  left: 0;
+  z-index: 60;
+  width: max-content;
+  max-width: 290px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 14px 30px -14px rgba(0, 0, 0, 0.9);
+  color: var(--text-secondary);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 17px;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-base) var(--ease-out-expo),
+    transform var(--dur-base) var(--ease-out-expo),
+    visibility var(--dur-base);
+}
+.disclosure-tip-bottom {
+  top: calc(100% + 8px);
+  transform: translate3d(0, -4px, 0);
+}
+.disclosure-tip-top {
+  bottom: calc(100% + 8px);
+  transform: translate3d(0, 4px, 0);
+}
+.disclosure:hover .disclosure-tip,
+.disclosure:focus-within .disclosure-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}

@@ -14,7 +14,7 @@
  */
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Badge, ConsoleNav, Panel, istTime } from '@/components/primitives';
+import { ConsoleNav, Disclosure, Panel, istTime } from '@/components/primitives';
 import { KpiStrip, OutageBanner, ArmComparison, type MetricsSummary, type LiveOutage } from '@/components/tower/kpi';
 import { AtRiskQueueTable, QueueFilterTabs, type QueueFilter, type QueueRow } from '@/components/tower/queue-table';
 import { Caveats, ContactBudget, CostToday, FailureMix } from '@/components/tower/rail';
@@ -164,6 +164,13 @@ export function TowerClient({ initialEventId }: { initialEventId: string | null 
           border: '1px solid var(--border-subtle)',
           backdropFilter: 'blur(12px)',
           WebkitBackdropFilter: 'blur(12px)',
+          // backdrop-filter opens a stacking context, which trapped the
+          // disclosure tooltips inside the header and let the KPI strip — a
+          // later sibling — paint straight over them. Lifting the whole header
+          // above its siblings is the fix; raising the tooltip's own z-index
+          // could not have worked, because it is scoped to this context.
+          position: 'relative',
+          zIndex: 30,
         }}
       >
         <Link
@@ -176,8 +183,26 @@ export function TowerClient({ initialEventId }: { initialEventId: string | null 
           LEAKPROOF
         </Link>
         <ConsoleNav active="tower" />
-        <Badge tone="warn">{status?.mode === 'live' ? 'LIVE MODE' : 'TEST MODE'}</Badge>
-        <Badge tone="muted">All data synthetic</Badge>
+
+        {/* A divider, so the standing disclosures are visibly not more nav. */}
+        <span
+          className="h-4 w-px shrink-0"
+          style={{ background: 'var(--border-subtle)' }}
+          aria-hidden
+        />
+        <Disclosure
+          tone={status?.mode === 'live' ? 'warn' : 'muted'}
+          label={status?.mode === 'live' ? 'Live mode' : 'Test mode'}
+          explain={
+            status?.mode === 'live'
+              ? 'Live Razorpay keys are configured on this instance. Actions taken from this console can move real money and reach real customers.'
+              : 'This instance runs on Razorpay test-mode keys (rzp_test…). No real money can move and no real customer can be contacted from here.'
+          }
+        />
+        <Disclosure
+          label="All data synthetic"
+          explain="Every payment on this screen was produced by the seeded generator in scripts/simulate.ts and is reproducible from its seed. No real customer or transaction data is present anywhere in this database."
+        />
 
         <span className="ml-auto flex items-center gap-3">
           {feedError && (

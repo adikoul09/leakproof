@@ -1378,6 +1378,62 @@ servers do not share a working directory.
 
 ---
 
+## 31. The panel built to show the values compared showed neither
+
+**When:** Milestone 10, reported as "text is overflowing its box" in the
+decision trace drawer.
+
+**Symptom:** three things at once in the Policy gate card, only one of which was
+the reported one.
+
+1. `stop_on`'s expected value is `none of payment_success,customer_opt_out,
+   complaint_keyword_detected,refund_issued` — 72 characters with no spaces,
+   so one unbreakable token. The value column had `min-w-0 flex-1` but no
+   `break-words`, and it ran off the right edge of the drawer.
+2. `max_contacts_per_customer_per_week` is 34 characters in a `w-[190px]`
+   fixed column with nothing allowing it to wrap, so it printed straight
+   **over** the "expected 2 · actual 0" beside it. Two overlapping strings.
+3. And the one that actually mattered: `bank_holiday` displayed as
+   `✗ expected · actual`, with both values simply absent.
+
+**Diagnosis of (3):** `RuleTrace` declared `expected: string; actual: string`.
+The values are not strings — they are `'closed'`, `3`, and `false`, whichever
+the rule compares. **React renders a boolean `false` as nothing at all**, so
+`expected {r.expected}` produced the literal word "expected" followed by empty
+space. Every boolean rule — `customer_opt_out`, `bank_holiday` — lost both
+sides of its comparison, and a *failing* rule showed a red ✗ with no stated
+reason. The README calls this drawer "the screen that has to survive scrutiny"
+and claims it shows "the values actually compared". For a third of the rules it
+was showing neither.
+
+The wrong type is what hid it: TypeScript was satisfied, because a declared
+`string` cannot be `false`, so nothing ever flagged the interpolation.
+
+**Fix:** `expected`/`actual` typed `unknown` and passed through a `ruleValue()`
+that calls `String()` and maps empty to `—`. Both halves of the row now wrap.
+The card header gained `flex-wrap` so a long gate result badge
+(`defer:next_window@2026-09-05T08:00:00+05:30`, and `Badge` is
+`whitespace-nowrap` by design) drops to its own line instead of pushing out.
+The raw Razorpay error block and the message body got the same wrapping
+treatment, since `description` is free text and a message body can carry a URL.
+
+**Cost:** ~20 minutes.
+**What it means:** the reported bug was cosmetic and the bug beside it was not.
+Worth noting how it stayed invisible: `expected · actual` reads like a rule that
+had nothing to compare rather than like a rendering failure — the fifth defect
+on this project to disguise itself as a plausible empty state rather than an
+error. Also a reminder that a hand-written interface over a `jsonb` column is an
+assertion, not a check: this one was simply wrong, and being wrong is what
+stopped the compiler from catching the consequence.
+
+**Not fixed, and out of scope:** the drawer overflows its viewport at 390px.
+That is pre-existing and page-wide — the Control Tower's KPI strip, outage
+banners and queue tabs already overflow at that width with no drawer open. It is
+a desktop operations console by design and making it responsive is a different
+job from fixing a wrapping bug.
+
+---
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

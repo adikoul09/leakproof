@@ -5,8 +5,14 @@ import { Badge, istDateTime, rupees } from '@/components/primitives';
 
 interface RuleTrace {
   rule: string;
-  expected: string;
-  actual: string;
+  /**
+   * Genuinely mixed: `'closed'`, `3`, `false`. It was typed as `string`, which
+   * was not merely inaccurate — `{r.expected}` on a boolean `false` renders
+   * *nothing* in React, so every boolean rule printed "expected · actual" with
+   * both values missing. `bank_holiday` failed with no visible reason.
+   */
+  expected: unknown;
+  actual: unknown;
   pass: boolean;
 }
 
@@ -107,11 +113,17 @@ function Card({
       className="rounded-[10px]"
       style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)' }}
     >
+      {/*
+        `flex-wrap`: gate results are badges like
+        `defer:next_window@2026-09-05T08:00:00+05:30`, and Badge is
+        `whitespace-nowrap` by design. On a narrow drawer it has to drop to its
+        own line rather than push out of the card.
+      */}
       <header
-        className="flex items-center justify-between gap-2 px-3 py-2"
+        className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-3 py-2"
         style={{ borderBottom: '1px solid var(--border-subtle)' }}
       >
-        <h3 className="label">
+        <h3 className="label min-w-0">
           <span style={{ color: 'var(--text-muted)' }}>{n}.</span> {title}
         </h3>
         {right}
@@ -135,6 +147,18 @@ function Row({ k, v, mono }: { k: string; v: React.ReactNode; mono?: boolean }) 
   );
 }
 
+/**
+ * A rule's compared value, made visible whatever its type.
+ *
+ * `String()` rather than interpolation, because React renders `false` as an
+ * empty node and `0` as "0" — so a boolean rule silently lost both sides of
+ * the comparison it exists to show.
+ */
+function ruleValue(v: unknown): string {
+  if (v === null || v === undefined || v === '') return '—';
+  return String(v);
+}
+
 function RuleChecklist({ trace }: { trace: unknown }) {
   const rules = Array.isArray(trace) ? (trace as RuleTrace[]) : [];
   if (rules.length === 0) return <p style={{ color: 'var(--text-muted)' }}>No rules recorded.</p>;
@@ -142,15 +166,29 @@ function RuleChecklist({ trace }: { trace: unknown }) {
     <div className="flex flex-col gap-0.5">
       {rules.map((r, i) => (
         <div key={`${r.rule}-${i}`} className="flex items-baseline gap-2 text-[12px]">
-          <span style={{ color: r.pass ? 'var(--success)' : 'var(--danger)' }} aria-hidden>
+          <span
+            className="w-2.5 shrink-0"
+            style={{ color: r.pass ? 'var(--success)' : 'var(--danger)' }}
+            aria-hidden
+          >
             {r.pass ? '✓' : '✗'}
           </span>
-          <span className="w-[190px] shrink-0" style={{ color: 'var(--text-secondary)' }}>
+          {/*
+            `max_contacts_per_customer_per_week` is 34 characters and does not
+            fit 190px, and with nothing allowing it to wrap it printed straight
+            over the value column. Both halves wrap now: rule names are single
+            unbreakable tokens and policy values can be an 88-character
+            comma-joined list, so neither can be assumed to fit.
+          */}
+          <span
+            className="w-[200px] shrink-0 break-words"
+            style={{ color: 'var(--text-secondary)' }}
+          >
             {r.rule}
           </span>
           {/* The values actually compared, not a summary of them. */}
-          <span className="mono min-w-0 flex-1" style={{ color: 'var(--text-muted)' }}>
-            expected {r.expected} · actual {r.actual}
+          <span className="mono min-w-0 flex-1 break-words" style={{ color: 'var(--text-muted)' }}>
+            expected {ruleValue(r.expected)} · actual {ruleValue(r.actual)}
           </span>
         </div>
       ))}
@@ -273,8 +311,14 @@ export function TraceDrawer({ eventId, onClose }: { eventId: string | null; onCl
                 >
                   {Object.entries(trace.event.error).map(([k, v]) => (
                     <div key={k} className="mono flex gap-2">
-                      <span style={{ color: 'var(--text-muted)' }}>{k}</span>
-                      <span style={{ color: 'var(--text-primary)' }}>{v ?? 'null'}</span>
+                      <span className="shrink-0" style={{ color: 'var(--text-muted)' }}>
+                        {k}
+                      </span>
+                      {/* Razorpay writes these; `description` is free text and
+                          `reason` can be a long underscored token. */}
+                      <span className="min-w-0 break-words" style={{ color: 'var(--text-primary)' }}>
+                        {v ?? 'null'}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -435,7 +479,7 @@ export function TraceDrawer({ eventId, onClose }: { eventId: string | null; onCl
                         }
                       />
                       <pre
-                        className="mono mt-1.5 whitespace-pre-wrap rounded-sm px-2 py-1.5"
+                        className="mono mt-1.5 rounded-sm px-2 py-1.5 break-words whitespace-pre-wrap"
                         style={{ background: 'var(--bg-surface-2)' }}
                       >
                         {m.body}

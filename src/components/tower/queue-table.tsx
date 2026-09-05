@@ -2,8 +2,8 @@
 
 import {
   ArmChip,
-  Badge,
   ClassificationChip,
+  Disclosure,
   Empty,
   StateBadge,
   istTime,
@@ -242,7 +242,13 @@ export function AtRiskQueueTable({
           {rows.some((r) => r.is_synthetic) && (
             <>
               {' · '}
-              <Badge tone="muted">All data synthetic</Badge>
+              {/* Above, not below: this line sits on the bottom edge of the
+                  viewport and a tooltip dropped downward would be clipped. */}
+              <Disclosure
+                placement="top"
+                label="All data synthetic"
+                explain="Every row here was produced by the seeded generator in scripts/simulate.ts. No real customer or transaction data is present."
+              />
             </>
           )}
         </span>
