@@ -49,3 +49,8 @@ LEAKPROOF_BLUEPRINT.md
 leakproof-claude-code-kickoff.md
 # working instructions; names the private docs above, so it stays private too
 CLAUDE.md
+
+# local scratch files — throwaway scripts used while debugging a screen.
+# Pattern, not a list: these get created ad hoc and must never reach the
+# public repo just because nobody remembered to name a new one.
+.tmp-*

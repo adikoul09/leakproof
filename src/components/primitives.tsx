@@ -197,9 +197,15 @@ export function Empty({ message, action }: { message: string; action?: ReactNode
  * built: what is happening now, what it added, what it can be checked against,
  * what would have happened instead.
  */
-export function ConsoleNav({ active }: { active: 'tower' | 'lab' | 'ledger' | 'replay' }) {
+export function ConsoleNav({
+  active,
+}: {
+  active: 'tower' | 'lab' | 'ledger' | 'replay' | 'policy' | 'radar';
+}) {
   const items = [
     { href: '/tower', key: 'tower', label: 'Control tower' },
+    { href: '/radar', key: 'radar', label: 'Outage radar' },
+    { href: '/policy', key: 'policy', label: 'Policy studio' },
     { href: '/lab', key: 'lab', label: 'Incrementality lab' },
     { href: '/ledger', key: 'ledger', label: 'Audit ledger' },
     { href: '/replay', key: 'replay', label: 'Replay & what-if' },
