@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { MIN_CONTROL_N, computeMetrics, type ArmsInput, type MetricEvent } from './metrics';
+import { mulberry32 } from './stats';
 
 /** n events of which exactly `recoveredCount` recover, each at `ticket` paise. */
 function arm(n: number, recoveredCount: number, ticket = 100_000): MetricEvent[] {
@@ -159,6 +160,66 @@ describe('computeMetrics — the honesty checks', () => {
 
   it('passes the balance check when arms carry comparable tickets', () => {
     assert.equal(computeMetrics(arms()).balance.balanced, true);
+  });
+
+  it('does not cry foul over a spread the ticket distribution produces on its own', () => {
+    /**
+     * The regression the permutation test exists for.
+     *
+     * Arms are drawn here by a coin flip that never looks at the amount, so
+     * the randomisation is clean by construction — there is no bias to find.
+     * But ticket sizes span 200x, and on 1,200 events a few whales landing in
+     * one arm move its mean on their own: the realised spread is 18.6%, past
+     * the flat 15% the check used to fail at. A clean split produces a spread
+     * that large about a third of the time on a corpus this heavy-tailed
+     * (median 13.9%, 95th percentile 34.5%), so flagging it was measuring the
+     * tail rather than the split.
+     *
+     * The seed is fixed because the point is a specific unlucky draw, not an
+     * average one.
+     */
+    const BANDS = [20_000, 75_000, 250_000, 900_000, 4_000_000];
+    const rng = mulberry32(2);
+    const split: MetricEvent[][] = [[], [], []];
+    for (let i = 0; i < 1200; i += 1) {
+      const amountPaise = BANDS[(rng() * BANDS.length) | 0];
+      const u = rng();
+      const recovered = i % 10 === 0;
+      split[u < 0.18 ? 0 : u < 0.38 ? 1 : 2].push({
+        amountPaise,
+        recovered,
+        recoveredPaise: recovered ? amountPaise : 0,
+      });
+    }
+    const base = (events: MetricEvent[]) => ({
+      events,
+      messagesSent: 0,
+      costPaise: 0,
+      customersContacted: 0,
+    });
+    const m = computeMetrics({
+      control: base(split[0]),
+      naive: base(split[1]),
+      leakproof: base(split[2]),
+    });
+
+    assert.ok(
+      m.balance.mean_ticket_spread_pct > 15,
+      `expected the raw spread to trip the old flat threshold, got ${m.balance.mean_ticket_spread_pct}`,
+    );
+    assert.equal(m.balance.balanced, true);
+    assert.ok(m.balance.p_value >= 0.05, `p=${m.balance.p_value} should not be significant`);
+    assert.ok(
+      !m.caveats.some((c) => c.includes('mean ticket size differs')),
+      'a clean split must not be accused of bad randomisation',
+    );
+  });
+
+  it('reports what a clean split would produce, so the spread can be read in context', () => {
+    const m = computeMetrics(arms());
+    assert.ok(m.balance.null_p95_pct >= m.balance.null_median_pct);
+    assert.ok(m.balance.p_value > 0, 'the add-one correction keeps p strictly positive');
+    assert.ok(m.balance.p_value <= 1);
   });
 
   it('computes the false-nudge rate per message sent, not per event', () => {

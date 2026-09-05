@@ -1507,6 +1507,69 @@ self-inflicted outage.
 **Cost:** ~50 minutes to diagnose, ~15 to fix, and a Razorpay test account in
 cooldown for an unknown period on demo day.
 
+## 33. Ten thousand events went missing twice — once to a lazy route, once to me
+
+**When:** Milestone 11, growing the corpus so the Lab's two caveats would clear.
+
+**Symptom:** three batches ingested cleanly — 18,358 at-risk rows — but only
+6,934 arm assignments. The metrics inner-join `arm_assignments`, so 11,400
+events were invisible to the only number this project is judged on. The batches
+said `complete`. Nothing was in an error state. The corpus had simply stopped
+growing, and the screen reporting on it had no way to say so.
+
+**First cause: a route nobody had asked for yet.** `experiment.assign` runs on
+Inngest, and Inngest reaches the app over HTTP. `next dev` compiles a route on
+its first request, so `/api/inngest` did not exist until something asked for it
+— and the only thing that would have asked was Inngest itself. Both processes
+were up, both looked healthy, and no work moved. A `curl` against the route to
+check it was alive is what started the drain; the diagnostic was the fix, which
+is the kind of thing you only notice if you were watching the numbers before and
+after.
+
+**Second cause: me.** Chasing the wrong theory in #32, I restarted the Inngest
+dev server to clear what I thought was wedged throttle state. Its queue is held
+in memory. The restart dropped every event in flight and the drain stopped dead
+— not slowed, stopped, because the events that would have driven it no longer
+existed anywhere. Three hours of nothing, on top of a theory that was already
+wrong.
+
+**Why it could not just be re-ingested:** the events were in `payment_events`
+already. Re-running the generator would have produced new ids, not reprocessed
+these. And `reclassify.ts` deliberately writes only `classifications` —
+re-queueing `event.ready_for_triage` is what it exists to avoid, because for an
+already-planned event that mints a second recovery attempt.
+
+**Fix:** [`scripts/requeue-triage.ts`](scripts/requeue-triage.ts) re-emits
+`event.ready_for_triage` for events with no arm assignment, re-entering the real
+pipeline at the top so classify → assign → plan all run with their ledger
+receipts rather than being simulated by a script. The filter is the safety
+argument: `recovery.plan` is triggered by `event.assigned`, so an event with no
+assignment has never been planned and holds no attempt, and re-queueing it
+cannot duplicate one. Classification is idempotent (`onConflictDoUpdate`), so
+the few events classified but never assigned re-classify harmlessly.
+
+**The near-miss inside the fix.** The first version of that query excluded
+recovered events — `and e.recovered_at is null` — on the reasoning that a
+payment which came back does not need recovering. That is true and completely
+beside the point: the arm is the *grouping key for the incrementality result*,
+not an instruction to act. Assigning only events that never recovered would have
+handed the estimator a population selected on the outcome and driven every arm's
+recovery rate toward zero, and the headline number would have been confidently,
+silently wrong. Caught on the dry-run, because the count came back 8,584 instead
+of 10,526 and the gap needed explaining. The query now takes every at-risk event
+and the comment says why.
+
+**What it means for the system:** a dev server's queue is not durable state, and
+the corpus can shrink without anything reporting an error — the batch record
+says `complete` because ingestion completed, which is a different claim from
+"the pipeline processed it". The gap is now recoverable in one command instead
+of a manual re-ingest. What is still missing is the check that would have caught
+it on its own: at-risk events with no assignment is a number the Lab could show
+beside its corpus count, and does not.
+
+**Cost:** ~3 hours of stalled drain, self-inflicted; ~40 minutes to diagnose the
+lazy-route half and write the recovery script.
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

@@ -314,11 +314,24 @@ export function LabClient({ provenance }: { provenance: CorpusProvenance }) {
                     {metrics.balance.mean_ticket_spread_pct.toFixed(1)}%
                   </span>
                 </div>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-[12.5px]" style={{ color: 'var(--text-secondary)' }}>
+                    A clean split typically gives
+                  </span>
+                  <span className="tnum text-[12.5px]" style={{ color: 'var(--text-secondary)' }}>
+                    {metrics.balance.null_median_pct.toFixed(1)}% · 95th pct{' '}
+                    {metrics.balance.null_p95_pct.toFixed(1)}%
+                  </span>
+                </div>
                 <p className="text-[11.5px] leading-[16px]" style={{ color: 'var(--text-muted)' }}>
                   Arms are assigned by hashing the event id with a fixed salt, so ticket size should
-                  land close across arms. {metrics.balance.balanced
-                    ? 'It does, so the split looks clean.'
-                    : 'It does not — on a corpus this heavy-tailed a handful of very large failures can land in one arm and move its mean on their own, which is precisely why the estimator carries each event’s amount rather than assuming a common mean.'}
+                  land close across arms — but “close” depends on the arm sizes and on how heavy the
+                  ticket tail is, not on a fixed percentage. The spread is compared against the one
+                  this corpus produces by chance, over {metrics.balance.iterations.toLocaleString('en-IN')}{' '}
+                  label reshuffles (p={metrics.balance.p_value.toFixed(3)}).{' '}
+                  {metrics.balance.balanced
+                    ? 'It is within that range, so the split looks clean.'
+                    : 'It is larger than chance accounts for, so the split may not be clean and the headline number should be treated with suspicion.'}
                 </p>
               </>
             ) : (

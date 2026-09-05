@@ -309,3 +309,124 @@ export function bootstrapIncrementalPaise(
 
 export const mean = (xs: number[]): number =>
   xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length;
+
+/* ─────────────────────── randomisation balance ────────────────────── */
+
+export interface BalanceTest {
+  /** Observed (max − min) / min across arm mean ticket sizes, in percent. */
+  spread_pct: number;
+  /**
+   * P(a clean split produces a spread at least this large). Small means the
+   * split looks genuinely lopsided; large means the gap is ordinary sampling
+   * noise on a heavy tail.
+   */
+  p_value: number;
+  /** What a clean split typically produces at these arm sizes. */
+  null_median_pct: number;
+  /** The spread a clean split exceeds 5% of the time — the honest threshold. */
+  null_p95_pct: number;
+  iterations: number;
+}
+
+/**
+ * Permutation test for randomisation balance on mean ticket size.
+ *
+ * The question a balance check should answer is not "is the spread bigger than
+ * 15%" but "is it bigger than chance alone would produce at these arm sizes,
+ * on this ticket distribution". Those are very different tests when the
+ * distribution is heavy-tailed. Measured on the demo corpus (18,358 events,
+ * CV = 2.95, ticket sizes spanning 200×) by repeatedly partitioning the real
+ * pool 18/20/62 — i.e. under a split that is clean by construction:
+ *
+ *   corpus n        6,432   12,860   19,300   25,700
+ *   null median      12.3%     8.4%     6.9%     5.9%
+ *   null p95         27.6%    18.9%    14.9%    13.2%
+ *   P(spread > 15%)    36%      14%       5%       2%
+ *
+ * So at the size the Lab actually runs at, a fixed 15% threshold accuses a
+ * correct randomisation of being broken about a third of the time. It is the
+ * same mistake `RECOVERED_CONTROL_FOR_NOMINAL_COVERAGE` avoids by being
+ * measured rather than assumed.
+ *
+ * Under the null the arm labels are exchangeable, so the null distribution is
+ * obtained by reshuffling the labels and recomputing the spread. Seeded, so
+ * the same corpus always yields the same p-value and a published number can be
+ * rechecked.
+ *
+ * Only the smaller arms are drawn: once they are fixed the largest arm holds
+ * whatever is left, and its mean falls out of the pooled total. That keeps the
+ * work at ~38% of the corpus per iteration on a 18/20/62 split rather than
+ * 100%, which is what makes 2,000 iterations affordable on a request path.
+ */
+export function permutationBalanceTest(
+  armAmounts: number[][],
+  opts: { iterations?: number; seed?: number } = {},
+): BalanceTest {
+  const iterations = opts.iterations ?? 2000;
+  const rng = mulberry32(opts.seed ?? 42);
+
+  const spreadOf = (means: number[]): number => {
+    const lo = Math.min(...means);
+    const hi = Math.max(...means);
+    return lo <= 0 ? 0 : ((hi - lo) / lo) * 100;
+  };
+
+  const present = armAmounts.filter((a) => a.length > 0);
+  if (present.length < 2) {
+    return { spread_pct: 0, p_value: 1, null_median_pct: 0, null_p95_pct: 0, iterations: 0 };
+  }
+
+  const observed = spreadOf(present.map((a) => mean(a)));
+
+  // One flat pool, permuted in place across iterations. It stays the same
+  // multiset throughout, so every iteration is a fresh draw from it.
+  const pool: number[] = [];
+  for (const a of present) for (const x of a) pool.push(x);
+  const n = pool.length;
+  const total = pool.reduce((s, x) => s + x, 0);
+
+  const sizes = present.map((a) => a.length).sort((x, y) => x - y);
+  const sampled = sizes.slice(0, -1);
+  const largest = sizes[sizes.length - 1];
+
+  const nulls: number[] = new Array(iterations);
+  let atLeastObserved = 0;
+
+  for (let it = 0; it < iterations; it += 1) {
+    let cursor = 0;
+    let sampledSum = 0;
+    const means: number[] = [];
+
+    for (const k of sampled) {
+      let sum = 0;
+      // Partial Fisher-Yates — shuffle only the positions actually consumed.
+      for (let j = 0; j < k; j += 1) {
+        const pick = cursor + ((rng() * (n - cursor)) | 0);
+        const held = pool[cursor];
+        pool[cursor] = pool[pick];
+        pool[pick] = held;
+        sum += pool[cursor];
+        cursor += 1;
+      }
+      sampledSum += sum;
+      means.push(sum / k);
+    }
+    means.push((total - sampledSum) / largest);
+
+    const spread = spreadOf(means);
+    nulls[it] = spread;
+    if (spread >= observed) atLeastObserved += 1;
+  }
+
+  nulls.sort((a, b) => a - b);
+
+  return {
+    spread_pct: observed,
+    // Add-one correction: a p-value of exactly zero would claim more certainty
+    // than `iterations` draws can support.
+    p_value: (atLeastObserved + 1) / (iterations + 1),
+    null_median_pct: percentile(nulls, 0.5),
+    null_p95_pct: percentile(nulls, 0.95),
+    iterations,
+  };
+}

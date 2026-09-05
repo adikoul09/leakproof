@@ -7,7 +7,12 @@ type Events = {
   };
   /** A payment_events row exists and is waiting to be classified. */
   'event.ready_for_triage': {
-    data: { eventId: string; source: 'webhook' | 'simulator' };
+    /**
+     * `requeue` is a re-entry from `scripts/requeue-triage.ts` after events
+     * were lost with a dev server's in-memory queue — worth distinguishing in
+     * a trace from an event arriving for the first time.
+     */
+    data: { eventId: string; source: 'webhook' | 'simulator' | 'requeue' };
   };
   /** Classification written. Downstream: experiment.assign. */
   'event.classified': {

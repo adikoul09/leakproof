@@ -38,7 +38,14 @@ export interface MetricsSummary {
   false_nudge_rate: number;
   contact_budget: { used: number; cap: number };
   cost_breakdown_paise: Record<string, number>;
-  balance: { mean_ticket_spread_pct: number; balanced: boolean };
+  balance: {
+    mean_ticket_spread_pct: number;
+    balanced: boolean;
+    p_value: number;
+    null_median_pct: number;
+    null_p95_pct: number;
+    iterations: number;
+  };
   provenance: { bootstrap_iterations: number; bootstrap_seed: number; alpha: number };
   unpriced_cost_items: string[];
 }
@@ -375,7 +382,9 @@ export function ArmComparison({ metrics }: { metrics: MetricsSummary | null }) {
       {!metrics.balance.balanced && (
         <p className="text-[11.5px]" style={{ color: 'var(--warning)' }}>
           Randomisation check: mean ticket differs {metrics.balance.mean_ticket_spread_pct.toFixed(1)}%
-          across arms — treat the headline with caution.
+          across arms, more than chance accounts for at these arm sizes (p=
+          {metrics.balance.p_value.toFixed(3)}, chance typically gives{' '}
+          {metrics.balance.null_median_pct.toFixed(1)}%) — treat the headline with caution.
         </p>
       )}
     </Panel>

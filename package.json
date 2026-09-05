@@ -23,6 +23,7 @@
     "tune:triage": "tsx scripts/tune-triage.ts",
     "simulate": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/simulate.ts",
     "reclassify": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/reclassify.ts",
+    "requeue:triage": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/requeue-triage.ts",
     "webhook:register": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/register-webhook.ts",
     "compose:probe": "NODE_OPTIONS=\"--require ./scripts/dns-fallback.cjs\" tsx scripts/probe-compose.ts"
   },

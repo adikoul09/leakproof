@@ -138,7 +138,10 @@ async function main() {
   console.log(`  lift vs naive    ${m.lift_vs_naive_pp.toFixed(2)}pp  (planted ${((TRUE_LIFT - NAIVE_LIFT) * 100).toFixed(1)}pp)`);
   console.log(`  p-value          ${m.p_value.toExponential(2)}`);
   console.log(`  powered          ${m.powered}${m.power_blockers.length ? ` (${m.power_blockers.join('; ')})` : ''}`);
-  console.log(`  balance          ticket spread ${m.balance.mean_ticket_spread_pct.toFixed(2)}% — ${m.balance.balanced ? 'ok' : 'SUSPECT'}`);
+  console.log(
+    `  balance          ticket spread ${m.balance.mean_ticket_spread_pct.toFixed(2)}% — ${m.balance.balanced ? 'ok' : 'SUSPECT'}` +
+      `  (chance gives ${m.balance.null_median_pct.toFixed(2)}%, p95 ${m.balance.null_p95_pct.toFixed(2)}%, p=${m.balance.p_value.toFixed(3)})`,
+  );
   for (const c of m.caveats) console.log(`  caveat           ${c}`);
 
   console.log(`\n  provenance       seed=${m.provenance.bootstrap_seed} iterations=${m.provenance.bootstrap_iterations}\n`);
