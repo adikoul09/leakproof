@@ -1507,6 +1507,66 @@ self-inflicted outage.
 **Cost:** ~50 minutes to diagnose, ~15 to fix, and a Razorpay test account in
 cooldown for an unknown period on demo day.
 
+### Addendum, 10 September: it was never a cooldown, and `Retry-After` lied
+
+Five days later the same POST returns a third envelope, and this one names the
+cause:
+
+```
+HTTP 429  {"code":"RATE_LIMIT_EXCEEDED",
+           "description":"test mode limit of 30 reached for payment_link"}
+```
+
+Razorpay documents it plainly: *"In test mode, you can create up to 30 Payment
+Links per business."* The account had created exactly 30. There was no cooldown
+and there never had been. Nothing above this line about the block "escalating"
+to a "coarser cooldown" was right — that was me reading a quota ceiling as a
+time-based penalty because the error text invited it.
+
+**The same cause wore three different faces**, in this order:
+
+| what came back | what it looks like | what it was |
+|---|---|---|
+| `Too many requests`, `Retry-After: 2` | short token bucket | quota exhausted |
+| `Request failed. Please try after sometime.`, `source: business`, no header | account-level cooldown | quota exhausted |
+| `RATE_LIMIT_EXCEEDED`, `test mode limit of 30 reached` | a quota ceiling | quota exhausted |
+
+Only the third is actionable, and it arrived last. On the strength of the first
+two I ran a watcher for roughly five days waiting for something that cannot
+expire, and told the user twice that waiting was a reasonable long shot. It was
+not; the correct move was available on day one and was a support ticket.
+
+**The `Retry-After` blind spot.** The fix above made `call()` trust the header
+because Razorpay "says how long to wait". It does not always say the truth. On
+7 September, with the pipeline down and no other traffic on the account — one
+probe per fifteen minutes, verified by process inspection — the API returned
+`Retry-After: 2` and `Retry-After: 3` on probes spaced 45 seconds apart. A real
+burst limiter cannot be tripped by one request per quarter hour. The header was
+quoting a bucket refill for a condition that had nothing to do with buckets.
+
+Against a header like that the retry logic burns its whole 20-second budget on
+four or five hopeless attempts and then escalates, which is the same shape as
+the original bug, only faster and cheaper. Two things follow:
+
+1. **Treat `Retry-After` as a floor, not a promise.** Never wait less than it
+   asks; do not conclude that waiting it out is sufficient.
+2. **Classify on `error.code`, not on `status` plus prose.** `RATE_LIMIT_EXCEEDED`
+   and `BAD_REQUEST_ERROR` arrive with the identical 429 and opposite remedies —
+   one is "slow down", the other is "you are finished until a human raises your
+   limit". The discriminator was in the payload the whole time, in a field the
+   client parses and then discards. That is the same mistake as the original
+   entry, one field over.
+
+A retriable/non-retriable boolean cannot carry this. The rail needs a third
+state — *exhausted* — that stops the ladder immediately and surfaces to an
+operator, because no amount of backoff resolves it.
+
+**One undocumented detail, established empirically:** all 30 links on the
+account now read `status: expired`, and creates are still refused. Expired links
+still count against the cap. Letting them lapse does not recover quota, so the
+only levers are a raised limit, a different test account, or live mode.
+
+
 ## 33. Ten thousand events went missing twice — once to a lazy route, once to me
 
 **When:** Milestone 11, growing the corpus so the Lab's two caveats would clear.
