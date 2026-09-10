@@ -1841,6 +1841,52 @@ by printing the actual value instead of reading the code that produces it.
 **Cost:** ~45 minutes, most of it on the second hole, which no symptom would
 have reported until a judge's browser tab passed the ten-minute mark.
 
+## 38. The database hit a quota, and five screens degraded while the sixth died
+
+**What broke:** every API route in production started returning HTTP 500 in
+about 300ms — too fast to be a timeout. The Vercel runtime logs carried one
+cause on every query, from Postgres error code `53000`:
+
+```
+Your project has exceeded the data transfer quota.
+Upgrade your plan to increase limits.
+```
+
+Neon, not Vercel and not the deploy. Nothing in the application was wrong. It
+also explains the latency that had been building for hours beforehand —
+`/api/ledger/verify` went from 3.7s over 8,514 records to 76s over 9,848, which
+is not a data-volume curve. That was throttling on the approach to the wall.
+
+**What the failure exposed:** the Control Tower, Outage Radar, Audit Ledger,
+Policy Studio and Replay all fetch from the browser, so each one degraded into
+its own error state and kept its shell, its nav and its disclosures on screen.
+`/lab` returned a bare 500 page instead — the Vercel default, no nav, no
+branding, nothing.
+
+The reason is a deliberate design decision working exactly as designed and
+failing badly at the edge. `/lab` is the one screen with a server component
+that awaits a database read before rendering anything: `corpusProvenance()`,
+which supplies the synthetic-corpus disclosure. That is fetched on the server
+precisely so the disclosure renders *with* the headline number rather than
+arriving after a judge has already read it — the right call for honesty. The
+cost, unnoticed until the database refused a query, is that a rejected promise
+takes the entire route. There was no `error.tsx` anywhere under `src/app/`, so
+nothing caught it. The screen the project is judged on was the only screen with
+no graceful failure at all.
+
+**Fix:** `src/app/lab/error.tsx`. It keeps the console frame and states plainly
+that there are no numbers, rather than rendering something that could be
+mistaken for a screen still loading them. It repeats the one claim on that page
+that does not depend on any query — that every event in the corpus is synthetic,
+which is a property of the build — and logs `error.digest`, the only handle on
+the server-side stack available from a browser, so this is diagnosable from a
+screenshot next time. Verified by making the server component throw and watching
+React hand off to the boundary.
+
+**What is still true:** the boundary does not make the screen work without a
+database. It makes the failure legible. The quota itself was an account-level
+limit and no amount of application code would have moved it.
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.
