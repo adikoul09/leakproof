@@ -1719,6 +1719,68 @@ screen whose whole job is to be read at a glance.
 a reporting bug. On an operations console the visual hierarchy is a claim
 about what matters, and a zero given hero treatment claims something is wrong.
 
+## 37. The live queue never went quiet, and a reconnect skipped 51 rows
+
+**What broke:** `/api/stream` re-sent its most recent row on every 2-second
+tick, for the life of the connection. Nothing errored, no frame was malformed,
+and the payload was a real event with a real id. A client that de-duplicates
+by id would have looked entirely healthy while doing a database round-trip
+every two seconds to fetch a row it already had.
+
+**Why it happened:** the cursor round-tripped through a JavaScript `Date`.
+`created_at` is a `timestamptz` and Postgres keeps it to the microsecond;
+Drizzle's timestamp mapper reads it with `new Date(text)` and writes it back
+with `.toISOString()`, and a JS Date holds only milliseconds. A cursor taken
+from a row at `.911048` went back to Postgres as `.911`, and
+`created_at > '…911Z'` matched the row the cursor came from. Measured against
+the live corpus rather than argued about:
+
+```
+created_at (text)                          : 2026-09-07 07:30:33.911048+00
+after the Date round-trip                  : 2026-09-07T07:30:33.911Z
+cursor row re-matched by the old predicate : YES — re-sent every tick
+same predicate with the text cursor        : no
+```
+
+**The second hole, found while fixing the first.** The obvious repair is a
+keyset over `(created_at, id)` — but `defaultNow()` is Postgres' *transaction*
+timestamp, so every row of a batch insert shares one `created_at` to the
+microsecond. In the current corpus that is 467 distinct timestamps carrying
+more than one row, and 52 rows sitting on the busiest one. Holding the id only
+in memory fixes the live connection and leaves the reconnect broken: the
+connection is deliberately capped at ten minutes, and a client resuming from a
+timestamp-only cursor lands at `created_at > <ts>` and skips every other row
+written in that transaction.
+
+```
+resume from "<ts>|pay_Sc29f200000n4t"  → 43 rows   (nothing lost)
+resume from "<ts>"                     →  1 row    (42 silently skipped)
+```
+
+**Fix:** carry the cursor as Postgres' own text form, never as a `Date`, and
+put the id in the wire cursor as well as in memory — `<timestamp>|<event id>`,
+splitting on the first separator because a timestamp cannot contain one. A
+bare timestamp is still accepted, so an old client degrades to the previous
+behaviour instead of breaking. The `::text` cast is in the select list, which
+keeps the microseconds out of Drizzle's mapper entirely rather than trying to
+undo the truncation afterwards.
+
+**Verified end to end, not just unit-tested.** Against the dev server: one
+`events` frame carrying 53 rows, then keepalive comments for the rest of the
+window — the stream goes quiet and stays quiet. The reconnect numbers above
+are from the same run.
+
+**The general lesson:** precision loss is not a rounding problem, it is a
+correctness problem the moment the truncated value is used as a *comparison
+boundary*. And the twin of that: an ORM's type mapper is part of the query. It
+was not in the SQL, so it was not in the diagnosis, and it was the whole bug.
+This is the second timestamp defect on this project that presented as
+plausible behaviour rather than an error — see #28 — and the second one found
+by printing the actual value instead of reading the code that produces it.
+
+**Cost:** ~45 minutes, most of it on the second hole, which no symptom would
+have reported until a judge's browser tab passed the ten-minute mark.
+
 ## Deliberate cuts (not failures — decisions, stated up front)
 
 These are in the pitch, not hidden in a footnote.

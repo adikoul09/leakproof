@@ -1,5 +1,5 @@
 /**
- * GET /api/stream?since=<iso> — Server-Sent Events for the live queue.
+ * GET /api/stream?since=<cursor> — Server-Sent Events for the live queue.
  *
  * SSE rather than WebSockets, per the blueprint: one-directional is all the
  * tower needs, it survives serverless without a socket server, and it
@@ -11,9 +11,10 @@
  * someone else — and a dedicated connection per viewer is not something Neon's
  * connection budget will thank you for at demo time.
  */
-import { asc, gt } from 'drizzle-orm';
+import { asc, sql as dsql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { paymentEvents } from '@/db/schema';
+import { encodeStreamCursor, parseStreamCursor } from '@/core/tower/stream-cursor';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,9 +25,14 @@ const MAX_LIFETIME_MS = 10 * 60_000;
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const sinceParam = url.searchParams.get('since');
-  let cursor = sinceParam ? new Date(sinceParam) : new Date();
-  if (Number.isNaN(cursor.getTime())) cursor = new Date();
+  /**
+   * Keyset over (created_at, id), the timestamp kept as Postgres' own text.
+   * Both halves matter and both are load-bearing — see the codec's own note,
+   * and FAILURES.md #37.
+   */
+  const parsed = parseStreamCursor(url.searchParams.get('since'));
+  let cursorTs = parsed.ts;
+  let cursorId = parsed.id;
 
   const encoder = new TextEncoder();
   const startedAt = Date.now();
@@ -51,7 +57,7 @@ export async function GET(req: Request) {
       };
 
       req.signal.addEventListener('abort', close);
-      send('open', { since: cursor.toISOString() });
+      send('open', { since: encodeStreamCursor(cursorTs, cursorId) });
 
       const tick = async () => {
         if (closed) return;
@@ -64,7 +70,7 @@ export async function GET(req: Request) {
           const rows = await db
             .select({
               id: paymentEvents.id,
-              createdAt: paymentEvents.createdAt,
+              createdAtRaw: dsql<string>`${paymentEvents.createdAt}::text`,
               failedAt: paymentEvents.failedAt,
               amountPaise: paymentEvents.amountPaise,
               issuer: paymentEvents.issuer,
@@ -74,12 +80,18 @@ export async function GET(req: Request) {
             .from(paymentEvents)
             // Ordered by created_at, not failed_at: a late webhook carries an
             // old failure time and would otherwise never cross the cursor.
-            .where(gt(paymentEvents.createdAt, cursor))
-            .orderBy(asc(paymentEvents.createdAt))
+            .where(
+              cursorId === null
+                ? dsql`${paymentEvents.createdAt} > ${cursorTs}::timestamptz`
+                : dsql`(${paymentEvents.createdAt}, ${paymentEvents.id}) > (${cursorTs}::timestamptz, ${cursorId})`,
+            )
+            .orderBy(asc(paymentEvents.createdAt), asc(paymentEvents.id))
             .limit(100);
 
           if (rows.length > 0) {
-            cursor = rows[rows.length - 1].createdAt;
+            const last = rows[rows.length - 1];
+            cursorTs = last.createdAtRaw;
+            cursorId = last.id;
             send('events', {
               rows: rows.map((r) => ({
                 id: r.id,
@@ -89,7 +101,7 @@ export async function GET(req: Request) {
                 method: r.method,
                 state: r.state,
               })),
-              cursor: cursor.toISOString(),
+              cursor: encodeStreamCursor(cursorTs, cursorId),
             });
           } else {
             // A comment line keeps proxies from timing the connection out.
